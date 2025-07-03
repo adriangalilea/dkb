@@ -17,10 +17,12 @@ pipx install dkb
 ## Usage
 
 ```bash
-$ dkb --help
+$ dkb -h
 usage: dkb [-h] {add,remove,update,status,cron} ...
 
-Knowledge Base Manager - Fetch and manage documentation from Git repositories
+dkb v0.0.5
+
+Developer Knowledge Base - Fetch and organize markdown documentation locally for vibe coding
 
 positional arguments:
   {add,remove,update,status,cron}
@@ -30,6 +32,15 @@ positional arguments:
     update              Update all repositories
     status              Show status of all repositories
     cron                Run continuous update loop
+
+options:
+  -h, --help            show this help message and exit
+
+Examples:
+  dkb add vue https://github.com/vuejs/docs.git src/guide src/api
+  dkb remove vue
+  dkb update
+  dkb status
 
 # Add a repository with specific paths
 $ dkb add orpc https://github.com/unnoq/orpc.git apps/content/docs

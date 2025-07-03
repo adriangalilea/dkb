@@ -231,9 +231,16 @@ def run_cron(interval: int = 6 * 60 * 60) -> None:
 
 def main():
     """Main entry point with argument parsing."""
+    import importlib.metadata
+    
+    metadata = importlib.metadata.metadata("dkb")
+    version = metadata["Version"]
+    description = metadata["Summary"]
+    name = metadata["Name"]
+    
     parser = argparse.ArgumentParser(
-        prog="dkb",
-        description="Knowledge Base Manager - Fetch and manage documentation from Git repositories",
+        prog=name,
+        description=f"\033[33m{name}\033[0m \033[2;33mv{version}\033[0m\n\n\033[2m{description}\033[0m",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

@@ -8,3 +8,4 @@ __pycache__/
 *.log
 .git_sparse/
 .DS_Store
+uv.lock
