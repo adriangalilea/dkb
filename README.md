@@ -17,7 +17,7 @@ pipx install dkb
 ## Usage
 
 ```bash
-$ uv run dkb --help
+$ dkb --help
 usage: dkb [-h] {add,remove,update,status,cron} ...
 
 Knowledge Base Manager - Fetch and manage documentation from Git repositories
@@ -32,14 +32,14 @@ positional arguments:
     cron                Run continuous update loop
 
 # Add a repository with specific paths
-$ uv run dkb add orpc https://github.com/unnoq/orpc.git apps/content/docs
+$ dkb add orpc https://github.com/unnoq/orpc.git apps/content/docs
 Fetching orpc from https://github.com/unnoq/orpc.git
 Branch: main
 Paths: apps/content/docs
 ✓ orpc updated
 
 # Show status - note the newly added 'orpc' repository
-$ uv run dkb status
+$ dkb status
 Knowledge Base Status
 
 drizzle         no-tags              eb8d0dd2  25m ago
@@ -49,10 +49,10 @@ turborepo       no-tags              6c85c5ae  29m ago
 uv              no-tags              c3f13d25  19m ago
 
 # Update all repositories
-$ uv run dkb update
+$ dkb update
 
 # Remove a repository
-$ uv run dkb remove drizzle
+$ dkb remove drizzle
 ✗ drizzle removed
 ```
 
