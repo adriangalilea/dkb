@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.uv/
+.ruff_cache/
+*.log
+.git_sparse/
+.DS_Store
