@@ -4,6 +4,16 @@ Local documentation manager for vibe coding.
 
 > local md files > MCP
 
+## Install
+
+```bash
+# Install with uv
+uv tool install dkb
+
+# Or with pipx
+pipx install dkb
+```
+
 ## Usage
 
 ```bash
