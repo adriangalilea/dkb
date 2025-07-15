@@ -1,17 +1,45 @@
-name: Release to PyPI
+name: Python CI/CD
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+        
+    - name: Set up Python
+      run: uv python install 3.12
+    
+    - name: Install dependencies
+      run: uv sync --all-extras
+    
+    - name: Run ruff check
+      run: uv run ruff check
+    
+    - name: Run ruff format check
+      run: uv run ruff format --check
+
   publish:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -60,3 +88,31 @@ jobs:
           git config user.email github-actions@github.com
           git tag -a "v$VERSION" -m "Release v$VERSION"
           git push origin "v$VERSION"
+      
+      - name: Check for cliff.toml
+        if: steps.check.outputs.exists == 'false'
+        id: check-cliff
+        run: |
+          if [ -f .github/cliff.toml ]; then
+            echo "has_cliff=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_cliff=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate Changelog
+        if: steps.check.outputs.exists == 'false' && steps.check-cliff.outputs.has_cliff == 'true'
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: .github/cliff.toml
+          args: --latest
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+      
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false' && steps.check-cliff.outputs.has_cliff == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.check.outputs.version }}
+          body: ${{ steps.git-cliff.outputs.content }}
