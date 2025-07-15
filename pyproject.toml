@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dkb"
-version = "0.0.6"
-description = "Developer Knowledge Base - Fetch and organize markdown documentation locally for vibe coding"
+version = "0.1.0"
+description = "Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code"
 readme = "README.md"
 authors = [{name = "Adrian Galilea", email = "adriangalilea@gmail.com"}]
 license = {text = "MIT"}
 requires-python = ">=3.12"
-keywords = ["documentation", "knowledge-base", "git", "markdown", "ai", "vibe-coding", "llm", "developer-tools"]
+keywords = ["documentation", "knowledge-base", "git", "markdown", "ai", "vibe-coding", "claude-code", "llm", "developer-tools"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

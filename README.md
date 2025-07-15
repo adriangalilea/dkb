@@ -1,8 +1,21 @@
 # dkb - Developer Knowledge Base
 
-Local documentation manager for vibe coding.
+Local documentation manager for vibe coding with Claude Code.
 
 > local md files > MCP
+
+## 🎯 Perfect for Claude Code
+
+`dkb` automatically generates a `CLAUDE.md` file that provides context about your local documentation cache. This integrates seamlessly with Claude Code by:
+
+1. **Auto-generated context**: The `CLAUDE.md` file includes repository descriptions and paths
+2. **Easy referencing**: Simply add `@~/.local/share/dkb/CLAUDE.md` to your Claude instructions
+3. **Always up-to-date**: Regenerates whenever you add, remove, or update documentation
+
+Example CLAUDE.md reference in your instructions:
+```
+@/Users/you/.local/share/dkb/CLAUDE.md
+```
 
 ## Install
 
@@ -18,19 +31,20 @@ pipx install dkb
 
 ```bash
 $ dkb -h
-usage: dkb [-h] {add,remove,update,status,cron} ...
+usage: dkb [-h] {add,remove,update,status,claude,cron} ...
 
-dkb v0.0.5
+dkb v0.1.0
 
-Developer Knowledge Base - Fetch and organize markdown documentation locally for vibe coding
+Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
 positional arguments:
-  {add,remove,update,status,cron}
+  {add,remove,update,status,claude,cron}
                         Available commands
     add                 Add a new repository
     remove              Remove a repository
     update              Update all repositories
     status              Show status of all repositories
+    claude              Regenerate CLAUDE.md file
     cron                Run continuous update loop
 
 options:
@@ -76,4 +90,4 @@ Configuration file: `$XDG_DATA_HOME/dkb/config.json`
 ## TODO
 
 - [ ] UX should be `dkb add https://github.com/astral-sh/uv/tree/main/docs`
-- [ ] Explain how to hook-up Cloude Code with `dkb`
+- [x] Explain how to hook-up Claude Code with `dkb`
