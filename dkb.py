@@ -21,6 +21,11 @@ XDG_DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "s
 DATA_DIR = XDG_DATA_HOME / "dkb"
 CONFIG = DATA_DIR / "config.json"
 
+CLAUDE_GUIDANCE = """## 📚 Search Tips
+
+Use `LS` first to see file structure - repos may use .md, .mdx, .rst or other formats.
+"""
+
 
 @dataclass
 class RepoConfig:
@@ -74,6 +79,8 @@ def generate_claude_md() -> None:
     help_output = re.sub(r"\033\[[0-9;]*m", "", help_output)
 
     content = ["# Knowledge Base Context\n"]
+    content.append(CLAUDE_GUIDANCE)
+    content.append("## Documentation Cache\n")
     content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
 
     # Add repository descriptions with paths
