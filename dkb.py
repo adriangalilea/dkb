@@ -42,17 +42,17 @@ def get_github_description(url: str) -> str:
     if "github.com" in url:
         owner, repo = parts[-2], parts[-1]
         api_url = f"https://api.github.com/repos/{owner}/{repo}"
-        
+
         try:
             req = urllib.request.Request(api_url)
             req.add_header("Accept", "application/vnd.github.v3+json")
-            
+
             with urllib.request.urlopen(req) as response:
                 data = json.loads(response.read().decode())
                 return data.get("description", "No description available")
         except Exception:
             return "No description available"
-    
+
     return "No description available"
 
 
@@ -60,29 +60,32 @@ def generate_claude_md() -> None:
     """Generate CLAUDE.md file with repository information."""
     with open(CONFIG) as f:
         config = json.load(f)
-    
+
     # Get help output without colors
     env = os.environ.copy()
-    env['NO_COLOR'] = '1'
-    help_output = subprocess.check_output([sys.executable, __file__, "-h"], text=True, env=env)
-    
+    env["NO_COLOR"] = "1"
+    help_output = subprocess.check_output(
+        [sys.executable, __file__, "-h"], text=True, env=env
+    )
+
     # Strip any remaining ANSI codes
     import re
-    help_output = re.sub(r'\033\[[0-9;]*m', '', help_output)
-    
+
+    help_output = re.sub(r"\033\[[0-9;]*m", "", help_output)
+
     content = ["# Knowledge Base Context\n"]
     content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
-    
+
     # Add repository descriptions with paths
     for name, repo_info in sorted(config["repositories"].items()):
         desc = get_github_description(repo_info["url"])
         content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
-    
+
     content.append("\n## Usage\n")
     content.append("```")
     content.append(help_output.strip())
     content.append("```")
-    
+
     # Write CLAUDE.md to dkb data directory
     claude_md = DATA_DIR / "CLAUDE.md"
     claude_md.write_text("\n".join(content))
@@ -194,7 +197,7 @@ def add_repo(name: str, url: str, paths: list[str], branch: str = "main") -> Non
         print(f"✓ {name} updated")
     else:
         print(f"✓ {name} fetched")
-    
+
     generate_claude_md()
 
 
@@ -214,7 +217,7 @@ def remove_repo(name: str) -> None:
     if repo_path.exists():
         shutil.rmtree(repo_path)
     print(f"✗ {name} removed")
-    
+
     generate_claude_md()
 
 
@@ -297,12 +300,12 @@ def run_cron(interval: int = 6 * 60 * 60) -> None:
 def main():
     """Main entry point with argument parsing."""
     import importlib.metadata
-    
+
     metadata = importlib.metadata.metadata("dkb")
     version = metadata["Version"]
     description = metadata["Summary"]
     name = metadata["Name"]
-    
+
     parser = argparse.ArgumentParser(
         prog=name,
         description=f"\033[33m{name}\033[0m \033[2;33mv{version}\033[0m\n\n\033[2m{description}\033[0m",
@@ -343,7 +346,7 @@ Examples:
 
     # Status command
     subparsers.add_parser("status", help="Show status of all repositories")
-    
+
     # Claude command
     subparsers.add_parser("claude", help="Regenerate CLAUDE.md file")
 
