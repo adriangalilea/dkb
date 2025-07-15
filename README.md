@@ -8,7 +8,13 @@ Local documentation manager for vibe coding with Claude Code.
 > 
 > `dkb` automatically generates a `CLAUDE.md` file that provides context about your local documentation cache and `dkb` usage instructions.
 > 
-> Simply add `@~/.local/share/dkb/CLAUDE.md` to your `~/CLAUDE.md` for seamless integration.
+> ```diff
+> # ~/CLAUDE.md
+> + @~/.local/share/dkb/CLAUDE.md
+> ```
+> Now on your next Claude Code session it will know how to use it.
+
+![Claude integration](claude.png)
 
 > Local .md files > MCP
 
@@ -28,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude,cron} ...
 
-dkb v0.1.1
+dkb v0.1.2
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
