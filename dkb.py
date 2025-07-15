@@ -6,11 +6,14 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import urllib.request
+import urllib.parse
 
 PROGRAM_DIR = Path(__file__).parent
 # XDG Base Directory Specification
@@ -30,6 +33,60 @@ class RepoConfig:
 def run(cmd: list[str], cwd: Path | None = None) -> str:
     """Run a shell command and return output."""
     return subprocess.check_output(cmd, cwd=cwd, text=True).strip()
+
+
+def get_github_description(url: str) -> str:
+    """Fetch repository description from GitHub API."""
+    # Extract owner/repo from URL
+    parts = url.replace(".git", "").split("/")
+    if "github.com" in url:
+        owner, repo = parts[-2], parts[-1]
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        
+        try:
+            req = urllib.request.Request(api_url)
+            req.add_header("Accept", "application/vnd.github.v3+json")
+            
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                return data.get("description", "No description available")
+        except Exception:
+            return "No description available"
+    
+    return "No description available"
+
+
+def generate_claude_md() -> None:
+    """Generate CLAUDE.md file with repository information."""
+    with open(CONFIG) as f:
+        config = json.load(f)
+    
+    # Get help output without colors
+    env = os.environ.copy()
+    env['NO_COLOR'] = '1'
+    help_output = subprocess.check_output([sys.executable, __file__, "-h"], text=True, env=env)
+    
+    # Strip any remaining ANSI codes
+    import re
+    help_output = re.sub(r'\033\[[0-9;]*m', '', help_output)
+    
+    content = ["# Knowledge Base Context\n"]
+    content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
+    
+    # Add repository descriptions with paths
+    for name, repo_info in sorted(config["repositories"].items()):
+        desc = get_github_description(repo_info["url"])
+        content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
+    
+    content.append("\n## Usage\n")
+    content.append("```")
+    content.append(help_output.strip())
+    content.append("```")
+    
+    # Write CLAUDE.md to dkb data directory
+    claude_md = DATA_DIR / "CLAUDE.md"
+    claude_md.write_text("\n".join(content))
+    print(f"✓ Updated {claude_md}")
 
 
 def update_repo(repo: RepoConfig) -> bool:
@@ -137,6 +194,8 @@ def add_repo(name: str, url: str, paths: list[str], branch: str = "main") -> Non
         print(f"✓ {name} updated")
     else:
         print(f"✓ {name} fetched")
+    
+    generate_claude_md()
 
 
 def remove_repo(name: str) -> None:
@@ -155,6 +214,8 @@ def remove_repo(name: str) -> None:
     if repo_path.exists():
         shutil.rmtree(repo_path)
     print(f"✗ {name} removed")
+    
+    generate_claude_md()
 
 
 def update_repos(names: list[str] | None = None) -> None:
@@ -185,6 +246,10 @@ def update_repos(names: list[str] | None = None) -> None:
 
     if updated:
         print(f"\nUpdated: {', '.join(updated)}")
+        generate_claude_md()
+    elif names is None:
+        # Even if nothing updated, regenerate CLAUDE.md during full update
+        generate_claude_md()
 
 
 def show_status() -> None:
@@ -278,6 +343,9 @@ Examples:
 
     # Status command
     subparsers.add_parser("status", help="Show status of all repositories")
+    
+    # Claude command
+    subparsers.add_parser("claude", help="Regenerate CLAUDE.md file")
 
     # Cron command
     cron_parser = subparsers.add_parser("cron", help="Run continuous update loop")
@@ -305,6 +373,8 @@ Examples:
         update_repos(args.names)
     elif args.command == "status":
         show_status()
+    elif args.command == "claude":
+        generate_claude_md()
     elif args.command == "cron":
         run_cron(args.interval)
 

@@ -24,6 +24,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["ruff"]
+
 [project.urls]
 Homepage = "https://github.com/adriangalilea/dkb"
 Repository = "https://github.com/adriangalilea/dkb"
