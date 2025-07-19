@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude,cron} ...
 
-dkb v0.1.2
+dkb v0.1.3
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -52,8 +52,9 @@ options:
   -h, --help            show this help message and exit
 
 Examples:
-  dkb add vue https://github.com/vuejs/docs.git src/guide src/api
-  dkb remove vue
+  dkb add deno https://github.com/denoland/docs.git
+  dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
+  dkb remove tailwind
   dkb update
   dkb status
 

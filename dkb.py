@@ -148,20 +148,30 @@ def update_repo(repo: RepoConfig) -> bool:
         kb_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy only the requested paths
-        for path in repo.paths:
-            src = repo_path / path
-            assert src.exists(), f"Path '{path}' not found in repository"
+        if not repo.paths:  # Empty paths means clone entire repo
+            # Copy entire repository contents
+            for item in repo_path.iterdir():
+                if item.name == ".git":  # Skip .git directory
+                    continue
+                if item.is_dir():
+                    shutil.copytree(item, kb_dir / item.name)
+                else:
+                    shutil.copy2(item, kb_dir / item.name)
+        else:
+            for path in repo.paths:
+                src = repo_path / path
+                assert src.exists(), f"Path '{path}' not found in repository"
 
-            if src.is_dir():
-                # Copy directory contents directly to kb_dir
-                for item in src.iterdir():
-                    if item.is_dir():
-                        shutil.copytree(item, kb_dir / item.name)
-                    else:
-                        shutil.copy2(item, kb_dir / item.name)
-            else:
-                # Copy single file
-                shutil.copy2(src, kb_dir / src.name)
+                if src.is_dir():
+                    # Copy directory contents directly to kb_dir
+                    for item in src.iterdir():
+                        if item.is_dir():
+                            shutil.copytree(item, kb_dir / item.name)
+                        else:
+                            shutil.copy2(item, kb_dir / item.name)
+                else:
+                    # Copy single file
+                    shutil.copy2(src, kb_dir / src.name)
 
         # Update config with metadata
         config["repositories"][repo.name].update(
@@ -319,8 +329,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  dkb add vue https://github.com/vuejs/docs.git src/guide src/api
-  dkb remove vue
+  dkb add deno https://github.com/denoland/docs.git
+  dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
+  dkb remove tailwind
   dkb update
   dkb status
         """,
@@ -335,7 +346,9 @@ Examples:
     add_parser.add_argument("name", help="Name for the repository")
     add_parser.add_argument("url", help="Git repository URL")
     add_parser.add_argument(
-        "paths", nargs="+", help="Path(s) to fetch from the repository"
+        "paths",
+        nargs="*",
+        help="Path(s) to fetch from the repository (empty for entire repo)",
     )
     add_parser.add_argument(
         "-b", "--branch", default="main", help="Branch to fetch (default: main)"
