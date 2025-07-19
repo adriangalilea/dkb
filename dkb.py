@@ -51,9 +51,10 @@ class RepoConfig:
     version_url: str
 
 
-def run(cmd: list[str], cwd: Path | None = None) -> str:
+def run(cmd: list[str], cwd: Path | None = None, suppress_stderr: bool = False) -> str:
     """Run a shell command and return output."""
-    return subprocess.check_output(cmd, cwd=cwd, text=True).strip()
+    stderr = subprocess.DEVNULL if suppress_stderr else None
+    return subprocess.check_output(cmd, cwd=cwd, text=True, stderr=stderr).strip()
 
 
 def get_github_info(url: str) -> tuple[str, str]:
@@ -150,6 +151,7 @@ def get_github_info(url: str) -> tuple[str, str]:
 
 def generate_claude_md() -> None:
     """Generate CLAUDE.md file with repository information."""
+    console.print()  # Add newline before command output
     console.print("📚 Updating documentation index...")
     with Progress(
         TextColumn("   "),  # Manual indent
@@ -183,7 +185,9 @@ def generate_claude_md() -> None:
         # Add repository descriptions with paths
         repos = sorted(config["repositories"].items())
         for i, (name, repo_info) in enumerate(repos):
-            progress.update(task, description=f"Fetching GitHub description for {name}...")
+            progress.update(
+                task, description=f"Fetching GitHub description for {name}..."
+            )
             desc, _ = get_github_info(repo_info["url"])
             content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
 
@@ -195,9 +199,9 @@ def generate_claude_md() -> None:
         # Write CLAUDE.md to dkb data directory
         claude_md = DATA_DIR / "CLAUDE.md"
         claude_md.write_text("\n".join(content))
-        
+
         progress.update(task, description="Writing CLAUDE.md...", completed=True)
-    
+
         console.print(f"   [green]✓[/green] Updated {claude_md}")
 
     # Check if ~/CLAUDE.md exists and has the import
@@ -241,7 +245,9 @@ This gives Claude Code access to your documentation cache"""
         )
 
 
-def update_repo(repo: RepoConfig) -> tuple[bool, dict]:
+def update_repo(
+    repo: RepoConfig, progress: Progress | None = None, task_id=None
+) -> tuple[bool, dict]:
     """Update a single repository. Returns (updated, metadata)."""
     kb_dir = DATA_DIR / repo.name
 
@@ -260,7 +266,8 @@ def update_repo(repo: RepoConfig) -> tuple[bool, dict]:
                 "--quiet",
                 repo.url,
                 str(tmp_path / "repo"),
-            ]
+            ],
+            suppress_stderr=True,
         )
         repo_path = tmp_path / "repo"
 
@@ -316,6 +323,8 @@ def update_repo(repo: RepoConfig) -> tuple[bool, dict]:
                     shutil.copy2(src, kb_dir / src.name)
 
         # Get version from GitHub API (using version_url)
+        if progress and task_id is not None:
+            progress.update(task_id, description="Getting version info...")
         _, version = get_github_info(repo.version_url)
 
         # Create metadata dict
@@ -343,6 +352,7 @@ def add_repo(
     version_url: str | None = None,
 ) -> None:
     """Add a new repository and fetch its contents."""
+    console.print()  # Add newline before command output
     with open(CONFIG) as f:
         config = json.load(f)
 
@@ -352,53 +362,58 @@ def add_repo(
     repo = RepoConfig(
         name=name, url=url, branch=branch, paths=paths, version_url=version_url or url
     )
-    console.print(f"Fetching [cyan]{name}[/cyan] from {url}")
-    console.print(f"Branch: [yellow]{branch}[/yellow]")
-    if paths:
-        console.print(f"Paths: [green]{', '.join(paths)}[/green]")
-    else:
-        console.print("Paths: [green]<entire repository>[/green]")
+    console.print(f"📦 Adding [cyan]{name}[/cyan]...")
 
     # Try to fetch the repository first
-    try:
-        updated, metadata = update_repo(repo)
+    with Progress(
+        TextColumn("   "),  # Manual indent
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        try:
+            task = progress.add_task("Cloning repository...", total=None)
+            updated, metadata = update_repo(repo, progress, task)
 
-        # Only save config after successful fetch
-        config["repositories"][name] = {
-            "url": url,
-            "branch": branch,
-            "paths": paths,
-            "version_url": version_url or url,  # Default to main URL if not specified
-            **metadata,  # Include all metadata from update_repo
-        }
+            # Only save config after successful fetch
+            config["repositories"][name] = {
+                "url": url,
+                "branch": branch,
+                "paths": paths,
+                "version_url": version_url
+                or url,  # Default to main URL if not specified
+                **metadata,  # Include all metadata from update_repo
+            }
 
-        with open(CONFIG, "w") as f:
-            json.dump(config, f, indent=2)
+            with open(CONFIG, "w") as f:
+                json.dump(config, f, indent=2)
 
-        if updated:
-            console.print(f"[green]✓[/green] {name} updated")
-        else:
-            console.print(f"[green]✓[/green] {name} fetched")
+            version = metadata.get("version", "-")
+            version_str = f" (v{version})" if version != "-" else ""
+            console.print(f"   [green]✓[/green] Updated{version_str}")
 
-        generate_claude_md()
-
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]✗[/red] Failed to fetch {name}")
-        console.print(
-            "  [red]Error:[/red] Git command failed - check branch name or repository access"
-        )
-        if "does not exist" in str(e):
+        except subprocess.CalledProcessError as e:
+            console.print(f"   [red]✗[/red] Failed to fetch {name}")
             console.print(
-                f"  [yellow]Hint:[/yellow] Branch '{branch}' may not exist. Try a different branch with -b"
+                "      [red]Error:[/red] Git command failed - check branch name or repository access"
             )
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to add {name}: {str(e)}")
-        raise SystemExit(1)
+            if "does not exist" in str(e):
+                console.print(
+                    f"      [yellow]Hint:[/yellow] Branch '{branch}' may not exist. Try a different branch with -b"
+                )
+            raise SystemExit(1)
+        except Exception as e:
+            console.print(f"   [red]✗[/red] Failed to add {name}: {str(e)}")
+            raise SystemExit(1)
+
+    # Generate CLAUDE.md only on success (after progress context is closed)
+    generate_claude_md()
 
 
 def remove_repo(name: str) -> None:
     """Remove a repository from config and delete its directory."""
+    console.print()  # Add newline before command output
     with open(CONFIG) as f:
         config = json.load(f)
 
@@ -413,13 +428,23 @@ def remove_repo(name: str) -> None:
     if repo_path.exists():
         shutil.rmtree(repo_path)
     console.print(f"[red]✗[/red] {name} removed")
-    console.print()  # Add newline before progress
 
-    generate_claude_md()
+    # Update CLAUDE.md to remove the deleted repo
+    claude_md = DATA_DIR / "CLAUDE.md"
+    if claude_md.exists():
+        try:
+            content = claude_md.read_text()
+            # Remove the line for this repository
+            lines = content.split("\n")
+            filtered_lines = [line for line in lines if f"**{name}**" not in line]
+            claude_md.write_text("\n".join(filtered_lines))
+        except Exception as e:
+            console.print(f"[yellow]⚠ Failed to update {claude_md}: {e}[/yellow]")
 
 
 def update_repos(names: list[str] | None = None) -> None:
     """Update all repositories or specific ones if names provided."""
+    console.print()  # Add newline before command output
     with open(CONFIG) as f:
         config = json.load(f)
 
@@ -456,6 +481,7 @@ def update_repos(names: list[str] | None = None) -> None:
 
 def show_status() -> None:
     """Display status of all repositories."""
+    console.print()  # Add newline before command output
     with open(CONFIG) as f:
         config = json.load(f)
 
@@ -491,14 +517,14 @@ def show_status() -> None:
         # Extract owner/repo from URLs
         docs_url = repo.get("url", "")
         version_url = repo.get("version_url", docs_url)
-        
+
         # Format docs URL
         if "github.com" in docs_url:
             parts = docs_url.replace(".git", "").split("/")
             docs_repo = f"{parts[-2]}/{parts[-1]}"
         else:
             docs_repo = docs_url
-            
+
         # Format version URL (source)
         if version_url != docs_url and "github.com" in version_url:
             parts = version_url.replace(".git", "").split("/")
@@ -524,7 +550,6 @@ def run_cron(interval: int = 6 * 60 * 60) -> None:
 
 def main():
     """Main entry point with argument parsing."""
-    console.print()  # Add newline at start of every command
     parser = argparse.ArgumentParser(
         prog=NAME,
         description=f"\033[1;33m{NAME}\033[0m \033[2;33mv{VERSION}\033[0m\n\n{DESCRIPTION}",
