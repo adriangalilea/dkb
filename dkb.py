@@ -150,48 +150,55 @@ def get_github_info(url: str) -> tuple[str, str]:
 
 def generate_claude_md() -> None:
     """Generate CLAUDE.md file with repository information."""
+    console.print("📚 Updating documentation index...")
     with Progress(
+        TextColumn("   "),  # Manual indent
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
         transient=True,
     ) as progress:
-        progress.add_task("Updating documentation index...", total=None)
+        task = progress.add_task("Loading repositories...", total=None)
 
         with open(CONFIG) as f:
             config = json.load(f)
 
-    # Get help output without colors
-    env = os.environ.copy()
-    env["NO_COLOR"] = "1"
-    help_output = subprocess.check_output(
-        [sys.executable, __file__, "-h"], text=True, env=env
-    )
+        # Get help output without colors
+        env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+        help_output = subprocess.check_output(
+            [sys.executable, __file__, "-h"], text=True, env=env
+        )
 
-    # Strip any remaining ANSI codes
-    import re
+        # Strip any remaining ANSI codes
+        import re
 
-    help_output = re.sub(r"\033\[[0-9;]*m", "", help_output)
+        help_output = re.sub(r"\033\[[0-9;]*m", "", help_output)
 
-    content = ["# Knowledge Base Context\n"]
-    content.append(CLAUDE_GUIDANCE)
-    content.append("## Documentation Cache\n")
-    content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
+        content = ["# Knowledge Base Context\n"]
+        content.append(CLAUDE_GUIDANCE)
+        content.append("## Documentation Cache\n")
+        content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
 
-    # Add repository descriptions with paths
-    for name, repo_info in sorted(config["repositories"].items()):
-        desc, _ = get_github_info(repo_info["url"])
-        content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
+        # Add repository descriptions with paths
+        repos = sorted(config["repositories"].items())
+        for i, (name, repo_info) in enumerate(repos):
+            progress.update(task, description=f"Fetching GitHub description for {name}...")
+            desc, _ = get_github_info(repo_info["url"])
+            content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
 
-    content.append("\n## Usage\n")
-    content.append("```")
-    content.append(help_output.strip())
-    content.append("```")
+        content.append("\n## Usage\n")
+        content.append("```")
+        content.append(help_output.strip())
+        content.append("```")
 
-    # Write CLAUDE.md to dkb data directory
-    claude_md = DATA_DIR / "CLAUDE.md"
-    claude_md.write_text("\n".join(content))
-    console.print(f"[green]✓[/green] Updated {claude_md}")
+        # Write CLAUDE.md to dkb data directory
+        claude_md = DATA_DIR / "CLAUDE.md"
+        claude_md.write_text("\n".join(content))
+        
+        progress.update(task, description="Writing CLAUDE.md...", completed=True)
+    
+        console.print(f"   [green]✓[/green] Updated {claude_md}")
 
     # Check if ~/CLAUDE.md exists and has the import
     user_claude_md = Path.home() / "CLAUDE.md"
@@ -406,6 +413,7 @@ def remove_repo(name: str) -> None:
     if repo_path.exists():
         shutil.rmtree(repo_path)
     console.print(f"[red]✗[/red] {name} removed")
+    console.print()  # Add newline before progress
 
     generate_claude_md()
 
@@ -458,7 +466,8 @@ def show_status() -> None:
     table = Table(title="Knowledge Base Status", title_style="bold")
     table.add_column("Repository", style="cyan", no_wrap=True)
     table.add_column("Version", style="green")
-    table.add_column("Commit", style="dim")
+    table.add_column("Docs", style="blue")
+    table.add_column("Source", style="dim")
     table.add_column("Last Updated", style="yellow")
 
     for name, repo in sorted(config["repositories"].items()):
@@ -475,13 +484,29 @@ def show_status() -> None:
                 age_str = f"{int(hours / 24)}d ago"
 
             version = repo.get("version", "-")
-            commit = repo.get("commit", "unknown")[:8]
         else:
             age_str = "never"
             version = "-"
-            commit = "unknown"
 
-        table.add_row(name, version, commit, age_str)
+        # Extract owner/repo from URLs
+        docs_url = repo.get("url", "")
+        version_url = repo.get("version_url", docs_url)
+        
+        # Format docs URL
+        if "github.com" in docs_url:
+            parts = docs_url.replace(".git", "").split("/")
+            docs_repo = f"{parts[-2]}/{parts[-1]}"
+        else:
+            docs_repo = docs_url
+            
+        # Format version URL (source)
+        if version_url != docs_url and "github.com" in version_url:
+            parts = version_url.replace(".git", "").split("/")
+            source_repo = f"{parts[-2]}/{parts[-1]}"
+        else:
+            source_repo = "-"
+
+        table.add_row(name, version, docs_repo, source_repo, age_str)
 
     console.print(table)
 
@@ -532,7 +557,7 @@ def main():
     )
     add_parser.add_argument(
         "--version-url",
-        help="Repository URL to fetch version from (default: same as main URL)",
+        help="Source repository URL to fetch version from (e.g., tailwindcss for tailwindcss.com docs)",
     )
 
     # Remove command

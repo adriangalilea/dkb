@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude,cron} ...
 
-dkb v0.2.2
+dkb v0.2.3
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -70,16 +70,16 @@ Paths: <entire repository>
 # Show status with rich formatting
 $ dkb status
 
-               Knowledge Base Status                
-┏━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┓
-┃ Repository   ┃ Version ┃ Commit   ┃ Last Updated ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━┩
-│ better-auth  │ 1.2.12  │ 8e4f9b6c │ 1m ago       │
-│ deno         │ -       │ 981b8962 │ 0m ago       │
-│ nextjs       │ 15.4.2  │ 443a31b9 │ 0m ago       │
-│ tailwind     │ -       │ b19f4783 │ 0m ago       │
-│ uv           │ 0.8.0   │ d0efe1ed │ 9m ago       │
-└──────────────┴─────────┴──────────┴──────────────┘
+                                    Knowledge Base Status
+┏━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Repository   ┃ Version ┃ Docs                     ┃ Source                  ┃ Last Updated ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
+│ better-auth  │ 1.2.12  │ better-auth/better-auth  │ -                       │ 25m ago      │
+│ deno         │ 2.4.2   │ denoland/docs            │ denoland/deno           │ 25m ago      │
+│ nextjs       │ 15.4.2  │ vercel/next.js           │ -                       │ 24m ago      │
+│ tailwind     │ 4.1.11  │ tailwindlabs/tailwindcss.com │ tailwindlabs/tailwindcss │ 12m ago      │
+│ uv           │ 0.8.0   │ astral-sh/uv             │ -                       │ 33m ago      │
+└──────────────┴─────────┴──────────────────────────┴─────────────────────────┴──────────────┘
 
 # Update all repositories
 $ dkb update
