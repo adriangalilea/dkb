@@ -58,7 +58,8 @@ def run(cmd: list[str], cwd: Path | None = None, suppress_stderr: bool = False) 
 
 
 def get_github_info(url: str) -> tuple[str, str]:
-    """Fetch repository description and latest version from GitHub API."""
+    """Fetch repository description and latest version from GitHub API.
+    Returns (description, version)."""
     # Extract owner/repo from URL
     parts = url.replace(".git", "").split("/")
     if "github.com" in url:
@@ -149,6 +150,118 @@ def get_github_info(url: str) -> tuple[str, str]:
     return "No description available", "-"
 
 
+class ClaudeMdRepository:
+    """Data access layer for CLAUDE.md repository management."""
+
+    def __init__(self):
+        self.claude_md = DATA_DIR / "CLAUDE.md"
+
+    def _read_repos(self) -> dict[str, dict]:
+        """Read all repositories from CLAUDE.md."""
+        if not self.claude_md.exists():
+            return {}
+
+        content = self.claude_md.read_text()
+        repos = {}
+
+        # Parse XML structure
+        import xml.etree.ElementTree as ET
+
+        # Extract repositories section
+        start = content.find("<repositories>")
+        end = content.find("</repositories>") + len("</repositories>")
+        if start == -1 or end == -1:
+            return {}
+
+        xml_content = content[start:end]
+        root = ET.fromstring(xml_content)
+
+        for item in root.findall("item"):
+            name = item.find("name").text
+            repos[name] = {
+                "description": item.find("description").text,
+                "version": item.find("version").text,
+                "location": item.find("location").text,
+            }
+
+        return repos
+
+    def _write_repos(self, repos: dict[str, dict]) -> None:
+        """Write repositories back to CLAUDE.md."""
+        if not self.claude_md.exists():
+            # Create new file with full structure
+            generate_claude_md()
+            return
+
+        content = self.claude_md.read_text()
+
+        # Build new repositories section
+        repo_lines = ["<repositories>"]
+        for name in sorted(repos.keys()):
+            repo = repos[name]
+            repo_lines.extend(
+                [
+                    "<item>",
+                    f"  <name>{name}</name>",
+                    f"  <description>{repo['description']}</description>",
+                    f"  <version>{repo['version']}</version>",
+                    f"  <location>{repo['location']}</location>",
+                    "</item>",
+                ]
+            )
+        repo_lines.append("</repositories>")
+
+        # Replace repositories section
+        start = content.find("<repositories>")
+        end = content.find("</repositories>") + len("</repositories>")
+
+        if start != -1 and end != -1:
+            new_content = content[:start] + "\n".join(repo_lines) + content[end:]
+            self.claude_md.write_text(new_content)
+
+    def add(self, name: str, repo_info: dict) -> None:
+        """Add a repository."""
+        repos = self._read_repos()
+
+        repos[name] = {
+            "description": repo_info.get("description", "No description available"),
+            "version": repo_info.get("version", "-"),
+            "location": str(DATA_DIR / name),
+        }
+
+        self._write_repos(repos)
+
+    def remove(self, name: str) -> None:
+        """Remove a repository."""
+        repos = self._read_repos()
+        repos.pop(name, None)
+        self._write_repos(repos)
+
+    def update(self, name: str, repo_info: dict) -> None:
+        """Update a repository."""
+        self.add(name, repo_info)  # add handles updates too
+
+
+# Create singleton instance
+claude_md_repo = ClaudeMdRepository()
+
+
+def add_repo_to_claude_md(name: str, repo_info: dict) -> None:
+    """Add a repository to CLAUDE.md."""
+    claude_md_repo.add(name, repo_info)
+    console.print(f"   [green]✓[/green] Updated {DATA_DIR}/CLAUDE.md")
+
+
+def remove_repo_from_claude_md(name: str) -> None:
+    """Remove a repository from CLAUDE.md."""
+    claude_md_repo.remove(name)
+
+
+def update_repo_in_claude_md(name: str, repo_info: dict) -> None:
+    """Update a repository in CLAUDE.md."""
+    claude_md_repo.update(name, repo_info)
+
+
 def generate_claude_md() -> None:
     """Generate CLAUDE.md file with repository information."""
     console.print()  # Add newline before command output
@@ -181,16 +294,20 @@ def generate_claude_md() -> None:
         content.append(CLAUDE_GUIDANCE)
         content.append("## Documentation Cache\n")
         content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
-
+        content.append("<repositories>")
         # Add repository descriptions with paths
         repos = sorted(config["repositories"].items())
         for i, (name, repo_info) in enumerate(repos):
-            progress.update(
-                task, description=f"Fetching GitHub description for {name}..."
-            )
-            desc, _ = get_github_info(repo_info["url"])
-            content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
-
+            progress.update(task, description=f"Processing {name}...")
+            desc = repo_info.get("description", "No description available")
+            version = repo_info.get("version", "-")
+            content.append("<item>")
+            content.append(f"  <name>{name}</name>")
+            content.append(f"  <description>{desc}</description>")
+            content.append(f"  <version>{version}</version>")
+            content.append(f"  <location>{DATA_DIR}/{name}</location>")
+            content.append("</item>")
+        content.append("</repositories>")
         content.append("\n## Usage\n")
         content.append("```")
         content.append(help_output.strip())
@@ -271,17 +388,8 @@ def update_repo(
         )
         repo_path = tmp_path / "repo"
 
-        # Get commit info
+        # Get commit info from docs repo
         commit = run(["git", "rev-parse", "HEAD"], cwd=repo_path)
-        try:
-            tag = subprocess.check_output(
-                ["git", "describe", "--tags", "--abbrev=0"],
-                cwd=repo_path,
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-        except subprocess.CalledProcessError:
-            tag = "no-tags"
 
         # Load config to check old commit
         with open(CONFIG) as f:
@@ -322,17 +430,23 @@ def update_repo(
                     # Copy single file
                     shutil.copy2(src, kb_dir / src.name)
 
-        # Get version from GitHub API (using version_url)
+        # Get version and description from GitHub API (using version_url for version, docs url for description)
         if progress and task_id is not None:
             progress.update(task_id, description="Getting version info...")
-        _, version = get_github_info(repo.version_url)
+        desc, version = get_github_info(repo.version_url)
+
+        # Also get description from docs repo if different
+        if repo.version_url != repo.url:
+            docs_desc, _ = get_github_info(repo.url)
+        else:
+            docs_desc = desc
 
         # Create metadata dict
         metadata = {
             "last_updated": datetime.now().isoformat(),
             "commit": commit,
-            "tag": tag,
             "version": version,
+            "description": docs_desc,
         }
 
         # Update config with metadata (only if repo already exists)
@@ -390,8 +504,8 @@ def add_repo(
                 json.dump(config, f, indent=2)
 
             version = metadata.get("version", "-")
-            version_str = f" (v{version})" if version != "-" else ""
-            console.print(f"   [green]✓[/green] Updated{version_str}")
+            version_str = f"{version}" if version != "-" else ""
+            console.print(f"   [green]✓[/green] {version_str}")
 
         except subprocess.CalledProcessError as e:
             console.print(f"   [red]✗[/red] Failed to fetch {name}")
@@ -407,8 +521,8 @@ def add_repo(
             console.print(f"   [red]✗[/red] Failed to add {name}: {str(e)}")
             raise SystemExit(1)
 
-    # Generate CLAUDE.md only on success (after progress context is closed)
-    generate_claude_md()
+    # Add to CLAUDE.md
+    add_repo_to_claude_md(name, config["repositories"][name])
 
 
 def remove_repo(name: str) -> None:
@@ -429,17 +543,8 @@ def remove_repo(name: str) -> None:
         shutil.rmtree(repo_path)
     console.print(f"[red]✗[/red] {name} removed")
 
-    # Update CLAUDE.md to remove the deleted repo
-    claude_md = DATA_DIR / "CLAUDE.md"
-    if claude_md.exists():
-        try:
-            content = claude_md.read_text()
-            # Remove the line for this repository
-            lines = content.split("\n")
-            filtered_lines = [line for line in lines if f"**{name}**" not in line]
-            claude_md.write_text("\n".join(filtered_lines))
-        except Exception as e:
-            console.print(f"[yellow]⚠ Failed to update {claude_md}: {e}[/yellow]")
+    # Remove from CLAUDE.md
+    remove_repo_from_claude_md(name)
 
 
 def update_repos(names: list[str] | None = None) -> None:
@@ -473,7 +578,11 @@ def update_repos(names: list[str] | None = None) -> None:
 
     if updated:
         console.print(f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]")
-        generate_claude_md()
+        # Update CLAUDE.md for changed repos
+        with open(CONFIG) as f:
+            config = json.load(f)
+        for name in updated:
+            update_repo_in_claude_md(name, config["repositories"][name])
     elif names is None:
         # Even if nothing updated, regenerate CLAUDE.md during full update
         generate_claude_md()
