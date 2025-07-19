@@ -195,27 +195,47 @@ def add_repo(name: str, url: str, paths: list[str], branch: str = "main") -> Non
 
     assert name not in config["repositories"], f"Repository '{name}' already exists"
 
-    config["repositories"][name] = {
-        "url": url,
-        "branch": branch,
-        "paths": paths,
-    }
-
-    with open(CONFIG, "w") as f:
-        json.dump(config, f, indent=2)
-
-    # Automatically update
+    # Prepare repo config but don't save yet
     repo = RepoConfig(name=name, url=url, branch=branch, paths=paths)
     print(f"Fetching {name} from {url}")
     print(f"Branch: {branch}")
-    print(f"Paths: {', '.join(paths)}")
-
-    if update_repo(repo):
-        print(f"✓ {name} updated")
+    if paths:
+        print(f"Paths: {', '.join(paths)}")
     else:
-        print(f"✓ {name} fetched")
+        print("Paths: <entire repository>")
 
-    generate_claude_md()
+    # Try to fetch the repository first
+    try:
+        updated = update_repo(repo)
+
+        # Only save config after successful fetch
+        config["repositories"][name] = {
+            "url": url,
+            "branch": branch,
+            "paths": paths,
+        }
+
+        with open(CONFIG, "w") as f:
+            json.dump(config, f, indent=2)
+
+        if updated:
+            print(f"✓ {name} updated")
+        else:
+            print(f"✓ {name} fetched")
+
+        generate_claude_md()
+
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Failed to fetch {name}")
+        print("  Error: Git command failed - check branch name or repository access")
+        if "does not exist" in str(e):
+            print(
+                f"  Hint: Branch '{branch}' may not exist. Try a different branch with -b"
+            )
+        raise SystemExit(1)
+    except Exception as e:
+        print(f"✗ Failed to add {name}: {str(e)}")
+        raise SystemExit(1)
 
 
 def remove_repo(name: str) -> None:
