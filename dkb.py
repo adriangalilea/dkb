@@ -14,6 +14,21 @@ from datetime import datetime
 from pathlib import Path
 import urllib.request
 import urllib.parse
+import importlib.metadata
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm
+from rich.table import Table
+from rich import print as rprint
+
+console = Console()
+
+# Get package metadata
+METADATA = importlib.metadata.metadata("dkb")
+VERSION = METADATA["Version"]
+DESCRIPTION = METADATA["Summary"]
+NAME = METADATA["Name"]
 
 PROGRAM_DIR = Path(__file__).parent
 # XDG Base Directory Specification
@@ -40,25 +55,95 @@ def run(cmd: list[str], cwd: Path | None = None) -> str:
     return subprocess.check_output(cmd, cwd=cwd, text=True).strip()
 
 
-def get_github_description(url: str) -> str:
-    """Fetch repository description from GitHub API."""
+def get_github_info(url: str) -> tuple[str, str]:
+    """Fetch repository description and latest version from GitHub API."""
     # Extract owner/repo from URL
     parts = url.replace(".git", "").split("/")
     if "github.com" in url:
         owner, repo = parts[-2], parts[-1]
-        api_url = f"https://api.github.com/repos/{owner}/{repo}"
-
+        
+        # Check if gh CLI is available
         try:
-            req = urllib.request.Request(api_url)
-            req.add_header("Accept", "application/vnd.github.v3+json")
+            subprocess.run(["gh", "--version"], capture_output=True, check=True)
+            use_gh = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            use_gh = False
+        
+        if use_gh:
+            # Use gh CLI for authenticated requests
+            try:
+                # Get repo info
+                repo_data = subprocess.check_output(
+                    ["gh", "api", f"repos/{owner}/{repo}"],
+                    text=True
+                )
+                data = json.loads(repo_data)
+                description = data.get("description", "No description available")
+                
+                # Get latest release
+                try:
+                    release_data = subprocess.check_output(
+                        ["gh", "api", f"repos/{owner}/{repo}/releases/latest"],
+                        text=True,
+                        stderr=subprocess.DEVNULL  # Suppress 404 errors
+                    )
+                    release = json.loads(release_data)
+                    version = release.get("tag_name", "").lstrip("v")
+                    if not version:
+                        version = "-"
+                except subprocess.CalledProcessError:
+                    # No releases found - this is normal for many repos
+                    version = "-"
+                    
+                return description, version
+            except subprocess.CalledProcessError as e:
+                console.print(f"[yellow]⚠ Failed to fetch GitHub data: {e}[/yellow]")
+                return "No description available", "-"
+        else:
+            # Fallback to direct API calls
+            # Get repo info
+            api_url = f"https://api.github.com/repos/{owner}/{repo}"
+            try:
+                req = urllib.request.Request(api_url)
+                req.add_header("Accept", "application/vnd.github.v3+json")
+                req.add_header("User-Agent", f"dkb/{VERSION}")
+                with urllib.request.urlopen(req) as response:
+                    data = json.loads(response.read().decode())
+                    description = data.get("description", "No description available")
+            except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    response_data = json.loads(e.read().decode())
+                    if "rate limit" in response_data.get("message", "").lower():
+                        console.print("[yellow]⚠ GitHub API rate limit exceeded. Install gh CLI for authenticated requests.[/yellow]")
+                description = "No description available"
+            except Exception:
+                description = "No description available"
+            
+            # Get latest release
+            release_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+            try:
+                req = urllib.request.Request(release_url)
+                req.add_header("Accept", "application/vnd.github.v3+json")
+                req.add_header("User-Agent", f"dkb/{VERSION}")
+                with urllib.request.urlopen(req) as response:
+                    data = json.loads(response.read().decode())
+                    version = data.get("tag_name", "").lstrip("v")
+                    if not version:
+                        version = "-"
+            except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    response_data = json.loads(e.read().decode())
+                    if "rate limit" in response_data.get("message", "").lower():
+                        console.print("[yellow]⚠ GitHub API rate limit exceeded. Install gh CLI for authenticated requests.[/yellow]")
+                version = "-"
+            except Exception:
+                version = "-"
+                
+            return description, version
+    
+    return "No description available", "-"
 
-            with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode())
-                return data.get("description", "No description available")
-        except Exception:
-            return "No description available"
 
-    return "No description available"
 
 
 def generate_claude_md() -> None:
@@ -85,7 +170,7 @@ def generate_claude_md() -> None:
 
     # Add repository descriptions with paths
     for name, repo_info in sorted(config["repositories"].items()):
-        desc = get_github_description(repo_info["url"])
+        desc, _ = get_github_info(repo_info["url"])
         content.append(f"- **{name}** (`{DATA_DIR}/{name}`): {desc}")
 
     content.append("\n## Usage\n")
@@ -96,7 +181,39 @@ def generate_claude_md() -> None:
     # Write CLAUDE.md to dkb data directory
     claude_md = DATA_DIR / "CLAUDE.md"
     claude_md.write_text("\n".join(content))
-    print(f"✓ Updated {claude_md}")
+    console.print(f"[green]✓[/green] Updated {claude_md}")
+    
+    # Check if ~/CLAUDE.md exists and has the import
+    user_claude_md = Path.home() / "CLAUDE.md"
+    import_line = f"@{claude_md}"
+    
+    if user_claude_md.exists():
+        user_content = user_claude_md.read_text()
+        if import_line not in user_content:
+            console.print()
+            panel_content = f"""[yellow]Your ~/CLAUDE.md doesn't import dkb's CLAUDE.md[/yellow]
+
+Adding [cyan]@{claude_md}[/cyan] would give Claude Code access to:
+
+  • All your [bold]{len(config['repositories'])}[/bold] documentation repos
+  • dkb usage instructions for fetching new docs
+"""
+            console.print(Panel(panel_content, title="💡 Claude Code Integration", border_style="yellow"))
+            
+            if Confirm.ask("\nWould you like to add it?", default=False):
+                # Add import at the end of the file
+                with open(user_claude_md, "a") as f:
+                    f.write(f"\n{import_line}\n")
+                console.print("[green]✓[/green] Added import to ~/CLAUDE.md")
+    else:
+        console.print()
+        panel_content = f"""[yellow]No ~/CLAUDE.md found[/yellow]
+
+Create one with:
+[cyan]echo '@{claude_md}' > ~/CLAUDE.md[/cyan]
+
+This gives Claude Code access to your documentation cache"""
+        console.print(Panel(panel_content, title="💡 Claude Code Setup", border_style="yellow"))
 
 
 def update_repo(repo: RepoConfig) -> bool:
@@ -173,12 +290,16 @@ def update_repo(repo: RepoConfig) -> bool:
                     # Copy single file
                     shutil.copy2(src, kb_dir / src.name)
 
+        # Get version from GitHub API
+        _, version = get_github_info(repo.url)
+        
         # Update config with metadata
         config["repositories"][repo.name].update(
             {
                 "last_updated": datetime.now().isoformat(),
                 "commit": commit,
                 "tag": tag,
+                "version": version,
             }
         )
 
@@ -197,12 +318,12 @@ def add_repo(name: str, url: str, paths: list[str], branch: str = "main") -> Non
 
     # Prepare repo config but don't save yet
     repo = RepoConfig(name=name, url=url, branch=branch, paths=paths)
-    print(f"Fetching {name} from {url}")
-    print(f"Branch: {branch}")
+    console.print(f"Fetching [cyan]{name}[/cyan] from {url}")
+    console.print(f"Branch: [yellow]{branch}[/yellow]")
     if paths:
-        print(f"Paths: {', '.join(paths)}")
+        console.print(f"Paths: [green]{', '.join(paths)}[/green]")
     else:
-        print("Paths: <entire repository>")
+        console.print("Paths: [green]<entire repository>[/green]")
 
     # Try to fetch the repository first
     try:
@@ -219,22 +340,22 @@ def add_repo(name: str, url: str, paths: list[str], branch: str = "main") -> Non
             json.dump(config, f, indent=2)
 
         if updated:
-            print(f"✓ {name} updated")
+            console.print(f"[green]✓[/green] {name} updated")
         else:
-            print(f"✓ {name} fetched")
+            console.print(f"[green]✓[/green] {name} fetched")
 
         generate_claude_md()
 
     except subprocess.CalledProcessError as e:
-        print(f"✗ Failed to fetch {name}")
-        print("  Error: Git command failed - check branch name or repository access")
+        console.print(f"[red]✗[/red] Failed to fetch {name}")
+        console.print("  [red]Error:[/red] Git command failed - check branch name or repository access")
         if "does not exist" in str(e):
-            print(
-                f"  Hint: Branch '{branch}' may not exist. Try a different branch with -b"
+            console.print(
+                f"  [yellow]Hint:[/yellow] Branch '{branch}' may not exist. Try a different branch with -b"
             )
         raise SystemExit(1)
     except Exception as e:
-        print(f"✗ Failed to add {name}: {str(e)}")
+        console.print(f"[red]✗[/red] Failed to add {name}: {str(e)}")
         raise SystemExit(1)
 
 
@@ -253,7 +374,7 @@ def remove_repo(name: str) -> None:
     repo_path = DATA_DIR / name
     if repo_path.exists():
         shutil.rmtree(repo_path)
-    print(f"✗ {name} removed")
+    console.print(f"[red]✗[/red] {name} removed")
 
     generate_claude_md()
 
@@ -277,15 +398,15 @@ def update_repos(names: list[str] | None = None) -> None:
             paths=cfg["paths"],
         )
 
-        print(f"Updating {name}...", end="", flush=True)
+        console.print(f"Updating [cyan]{name}[/cyan]...", end="")
         if update_repo(repo):
             updated.append(name)
-            print(" ✓ updated")
+            console.print(" [green]✓ updated[/green]")
         else:
-            print(" - unchanged")
+            console.print(" [dim]- unchanged[/dim]")
 
     if updated:
-        print(f"\nUpdated: {', '.join(updated)}")
+        console.print(f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]")
         generate_claude_md()
     elif names is None:
         # Even if nothing updated, regenerate CLAUDE.md during full update
@@ -298,10 +419,15 @@ def show_status() -> None:
         config = json.load(f)
 
     if not config["repositories"]:
-        print("No repositories found")
+        console.print("[yellow]No repositories found[/yellow]")
         return
 
-    print("Knowledge Base Status\n")
+    table = Table(title="Knowledge Base Status", title_style="bold")
+    table.add_column("Repository", style="cyan", no_wrap=True)
+    table.add_column("Version", style="green")
+    table.add_column("Commit", style="dim")
+    table.add_column("Last Updated", style="yellow")
+    
     for name, repo in sorted(config["repositories"].items()):
         if "last_updated" in repo:
             updated = datetime.fromisoformat(repo["last_updated"])
@@ -315,37 +441,32 @@ def show_status() -> None:
             else:
                 age_str = f"{int(hours / 24)}d ago"
 
-            tag = repo.get("tag", "no-tags")
+            version = repo.get("version", "-")
             commit = repo.get("commit", "unknown")[:8]
         else:
             age_str = "never"
-            tag = "not-fetched"
+            version = "-"
             commit = "unknown"
 
-        print(f"{name:15} {tag:20} {commit}  {age_str}")
+        table.add_row(name, version, commit, age_str)
+    
+    console.print(table)
 
 
 def run_cron(interval: int = 6 * 60 * 60) -> None:
     """Run continuous update loop."""
     while True:
-        print(f"Running update at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        console.print(f"[bold]Running update at {time.strftime('%Y-%m-%d %H:%M:%S')}[/bold]")
         update_repos()
-        print(f"Next update in {interval // 3600} hours\n")
+        console.print(f"[dim]Next update in {interval // 3600} hours[/dim]\n")
         time.sleep(interval)
 
 
 def main():
     """Main entry point with argument parsing."""
-    import importlib.metadata
-
-    metadata = importlib.metadata.metadata("dkb")
-    version = metadata["Version"]
-    description = metadata["Summary"]
-    name = metadata["Name"]
-
     parser = argparse.ArgumentParser(
-        prog=name,
-        description=f"\033[33m{name}\033[0m \033[2;33mv{version}\033[0m\n\n\033[2m{description}\033[0m",
+        prog=NAME,
+        description=f"\033[33m{NAME}\033[0m \033[2;33mv{VERSION}\033[0m\n\n\033[2m{DESCRIPTION}\033[0m",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
