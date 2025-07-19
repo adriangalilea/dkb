@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude,cron} ...
 
-dkb v0.2.0
+dkb v0.2.1
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -58,29 +58,39 @@ Examples:
   dkb update
   dkb status
 
-# Add a repository with specific paths
-$ dkb add orpc https://github.com/unnoq/orpc.git apps/content/docs
-Fetching orpc from https://github.com/unnoq/orpc.git
+# Add a repository (entire repo)
+$ dkb add deno https://github.com/denoland/docs.git
+
+Fetching deno from https://github.com/denoland/docs.git
 Branch: main
-Paths: apps/content/docs
-✓ orpc updated
+Paths: <entire repository>
+✓ deno fetched
+✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
 
-# Show status - note the newly added 'orpc' repository
+# Show status with rich formatting
 $ dkb status
-Knowledge Base Status
 
-drizzle         no-tags              eb8d0dd2  25m ago
-nextjs          no-tags              81f0c764  31m ago
-orpc            v1.6.4               99032307  0m ago     # <-- just added!
-turborepo       no-tags              6c85c5ae  29m ago
-uv              no-tags              c3f13d25  19m ago
+               Knowledge Base Status                
+┏━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Repository   ┃ Version ┃ Commit   ┃ Last Updated ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━┩
+│ better-auth  │ 1.2.12  │ 8e4f9b6c │ 1m ago       │
+│ deno         │ -       │ 981b8962 │ 0m ago       │
+│ nextjs       │ 15.4.2  │ 443a31b9 │ 0m ago       │
+│ tailwind     │ -       │ b19f4783 │ 0m ago       │
+│ uv           │ 0.8.0   │ d0efe1ed │ 9m ago       │
+└──────────────┴─────────┴──────────┴──────────────┘
 
 # Update all repositories
 $ dkb update
 
-# Remove a repository
-$ dkb remove drizzle
-✗ drizzle removed
+Updating deno... ✓ updated
+Updating nextjs... - unchanged
+Updating tailwind... - unchanged
+Updating uv... - unchanged
+
+Updated: deno
+✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
 ```
 
 ## Configuration

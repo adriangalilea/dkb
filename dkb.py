@@ -386,7 +386,7 @@ def update_repos(names: list[str] | None = None) -> None:
 
     updated = []
     repos_to_update = names if names else config["repositories"].keys()
-
+    
     for name in repos_to_update:
         assert name in config["repositories"], f"Repository '{name}' not found"
 
@@ -464,17 +464,18 @@ def run_cron(interval: int = 6 * 60 * 60) -> None:
 
 def main():
     """Main entry point with argument parsing."""
+    console.print()  # Add newline at start of every command
     parser = argparse.ArgumentParser(
         prog=NAME,
-        description=f"\033[33m{NAME}\033[0m \033[2;33mv{VERSION}\033[0m\n\n\033[2m{DESCRIPTION}\033[0m",
+        description=f"\033[1;33m{NAME}\033[0m \033[2;33mv{VERSION}\033[0m\n\n{DESCRIPTION}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  dkb add deno https://github.com/denoland/docs.git
-  dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
-  dkb remove tailwind
-  dkb update
-  dkb status
+\033[2mExamples:\033[0m
+  \033[34mdkb add\033[0m \033[2mdeno https://github.com/denoland/docs.git\033[0m
+  \033[34mdkb add\033[0m \033[2mtailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs\033[0m
+  \033[34mdkb remove\033[0m \033[2mtailwind\033[0m
+  \033[34mdkb update\033[0m
+  \033[34mdkb status\033[0m
         """,
     )
 
