@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude,cron} ...
 
-dkb v0.2.5
+dkb v0.2.6
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -54,6 +54,7 @@ options:
 Examples:
   dkb add deno https://github.com/denoland/docs.git
   dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
+  dkb add gramio https://github.com/gramiojs/documentation.git docs --version-url https://github.com/gramiojs/gramio.git
   dkb remove tailwind
   dkb update
   dkb status

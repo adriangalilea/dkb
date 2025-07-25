@@ -667,6 +667,7 @@ def main():
 \033[2mExamples:\033[0m
   \033[34mdkb add\033[0m \033[2mdeno https://github.com/denoland/docs.git\033[0m
   \033[34mdkb add\033[0m \033[2mtailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs\033[0m
+  \033[34mdkb add\033[0m \033[2mgramio https://github.com/gramiojs/documentation.git docs --version-url https://github.com/gramiojs/gramio.git\033[0m
   \033[34mdkb remove\033[0m \033[2mtailwind\033[0m
   \033[34mdkb update\033[0m
   \033[34mdkb status\033[0m
