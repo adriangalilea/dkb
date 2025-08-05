@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude} ...
 
-dkb v0.3.0
+dkb v1.0.0
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -51,17 +51,18 @@ options:
   -h, --help            show this help message and exit
 
 Examples:
-  dkb add deno https://github.com/denoland/docs.git
-  dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
-  dkb add gramio https://github.com/gramiojs/documentation.git docs --version-url https://github.com/gramiojs/gramio.git
+  dkb add https://github.com/denoland/docs.git
+  dkb add tailwindlabs/tailwindcss.com/src/docs
+  dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
+  dkb add https://github.com/astral-sh/uv/tree/main/docs
   dkb remove tailwind
   dkb update
   dkb status
 
 # Add a repository (entire repo)
-$ dkb add deno https://github.com/denoland/docs.git
+$ dkb add https://github.com/denoland/docs.git
 
-📦 Adding deno...
+📦 Adding docs...
    ✓ 2.4.2
    ✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
 
@@ -97,6 +98,13 @@ Docs stored in `$XDG_DATA_HOME/dkb/` (defaults to `~/.local/share/dkb/`)
 
 Configuration file: `$XDG_DATA_HOME/dkb/config.json`
 
-## TODO
+## Features
 
-- [ ] UX should be `dkb add https://github.com/astral-sh/uv/tree/main/docs`
+- ✨ **Auto-naming** - No need to specify names, automatically derived from repositories
+- 🎯 **Path-specific URLs** - Add only the docs you need: `dkb add owner/repo/path`
+- 🔗 **Multiple URL formats**:
+  - Full URLs: `https://github.com/astral-sh/uv/tree/main/docs`
+  - Shorthand: `tailwindlabs/tailwindcss.com/src/docs`
+  - Classic: `https://github.com/denoland/docs.git`
+- 📦 **Version tracking** - Track versions from a different repository with `--version-url`
+- 🤖 **Claude Code integration** - Auto-generates CLAUDE.md for seamless AI assistance

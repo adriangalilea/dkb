@@ -47,8 +47,8 @@ class RepositoryProvider(ABC):
     """Abstract base for repository providers."""
 
     @abstractmethod
-    def parse_url(self, url: str) -> Optional[Tuple[str, str]]:
-        """Parse URL and return (owner, repo) or None if invalid."""
+    def parse_url(self, url: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        """Parse URL and return (owner, repo, path) or None if invalid."""
         pass
 
     @abstractmethod
@@ -71,16 +71,35 @@ class GitHubProvider(RepositoryProvider):
     """GitHub repository provider."""
 
     def supports_url(self, url: str) -> bool:
-        """Check if URL is a GitHub URL."""
+        """Check if URL is a GitHub URL or shorthand."""
+        # Check for full URLs
         parsed = urllib.parse.urlparse(url)
-        return parsed.netloc in ["github.com", "www.github.com"]
+        if parsed.netloc in ["github.com", "www.github.com"]:
+            return True
 
-    def parse_url(self, url: str) -> Optional[Tuple[str, str]]:
-        """Parse GitHub URL and return (owner, repo)."""
+        # Check for shorthand like "owner/repo" or "owner/repo/path"
+        if not parsed.scheme and "/" in url:
+            parts = url.split("/")
+            return len(parts) >= 2
+
+        return False
+
+    def parse_url(self, url: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        """Parse GitHub URL and return (owner, repo, path)."""
+        parsed = urllib.parse.urlparse(url)
+
+        # Handle shorthand notation like "owner/repo/path"
+        if not parsed.scheme:
+            parts = url.split("/")
+            if len(parts) >= 2:
+                owner, repo = parts[0], parts[1]
+                path = "/".join(parts[2:]) if len(parts) > 2 else None
+                return owner, repo, path
+            return None
+
         if not self.supports_url(url):
             return None
 
-        parsed = urllib.parse.urlparse(url)
         path = parsed.path.strip("/")
 
         # Remove .git suffix if present
@@ -89,7 +108,26 @@ class GitHubProvider(RepositoryProvider):
 
         parts = path.split("/")
         if len(parts) >= 2:
-            return parts[0], parts[1]
+            owner, repo = parts[0], parts[1]
+
+            # Check for tree/branch/path structure
+            if len(parts) > 2 and parts[2] == "tree" and len(parts) > 4:
+                # Format: owner/repo/tree/branch/path...
+                subpath = "/".join(parts[4:])
+                return owner, repo, subpath
+            elif len(parts) > 2 and parts[2] not in [
+                "tree",
+                "blob",
+                "commits",
+                "releases",
+                "issues",
+                "pulls",
+            ]:
+                # Direct path format: owner/repo/path...
+                subpath = "/".join(parts[2:])
+                return owner, repo, subpath
+
+            return owner, repo, None
 
         return None
 
@@ -98,11 +136,11 @@ class GitHubProvider(RepositoryProvider):
         if not self.supports_url(url):
             return url
 
-        owner_repo = self.parse_url(url)
-        if not owner_repo:
+        parsed = self.parse_url(url)
+        if not parsed:
             return url
 
-        owner, repo = owner_repo
+        owner, repo, _ = parsed
         return f"https://github.com/{owner}/{repo}.git"
 
     def fetch_metadata(self, owner: str, repo: str) -> Dict[str, Any]:
@@ -241,11 +279,11 @@ class GitRepository:
         normalized_url = provider.normalize_url(url)
 
         # Parse URL
-        parsed = provider.parse_url(normalized_url)
+        parsed = provider.parse_url(url)  # Use original URL for path parsing
         if not parsed:
             raise ValueError(f"Invalid repository URL: {url}")
 
-        owner, repo = parsed
+        owner, repo, _ = parsed
 
         # Fetch metadata
         metadata = provider.fetch_metadata(owner, repo)
@@ -327,8 +365,11 @@ class RepositoryConfig:
         provider = provider_registry.get_provider(data["url"])
         if provider:
             parsed = provider.parse_url(data["url"])
-            owner = parsed[0] if parsed else "unknown"
-            repo = parsed[1] if parsed else "unknown"
+            if parsed:
+                owner, repo, _ = parsed
+            else:
+                owner = "unknown"
+                repo = "unknown"
             provider_name = provider.__class__.__name__.replace("Provider", "").lower()
         else:
             owner = "unknown"
@@ -353,8 +394,11 @@ class RepositoryConfig:
             vs_provider = provider_registry.get_provider(data["version_url"])
             if vs_provider:
                 vs_parsed = vs_provider.parse_url(data["version_url"])
-                vs_owner = vs_parsed[0] if vs_parsed else "unknown"
-                vs_repo = vs_parsed[1] if vs_parsed else "unknown"
+                if vs_parsed:
+                    vs_owner, vs_repo, _ = vs_parsed
+                else:
+                    vs_owner = "unknown"
+                    vs_repo = "unknown"
                 version_source = GitRepository(
                     url=data["version_url"],
                     provider=vs_provider.__class__.__name__.replace(
@@ -557,14 +601,22 @@ class RepositoryManager:
 
     def add(
         self,
-        name: str,
         url: str,
-        paths: list[str],
         branch: Optional[str] = None,
         version_url: Optional[str] = None,
     ):
         """Add a new repository."""
-        console.print(f"\n📦 Adding [cyan]{name}[/cyan]...")
+        # Parse URL to extract path if present
+        provider = provider_registry.get_provider(url)
+        if not provider:
+            raise ValueError(f"Unsupported repository URL: {url}")
+
+        parsed = provider.parse_url(url)
+        if not parsed:
+            raise ValueError(f"Invalid repository URL: {url}")
+
+        _, _, extracted_path = parsed
+        paths = [extracted_path] if extracted_path else []
 
         # Create repository objects
         with Progress(
@@ -583,7 +635,19 @@ class RepositoryManager:
                 progress.update(task, description="Fetching version source metadata...")
                 version_source = GitRepository.from_url(version_url)
 
-            progress.update(task, description="Creating configuration...")
+            # Derive name from version source if available, otherwise from main repo
+            name = version_source.repo if version_source else repository.repo
+
+        console.print(f"\n📦 Adding [cyan]{name}[/cyan]...")
+
+        with Progress(
+            TextColumn("   "),
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Creating configuration...", total=None)
 
             # Create config
             config = RepositoryConfig(
@@ -799,9 +863,17 @@ def main():
         description=f"{NAME} v{VERSION}\n\n{DESCRIPTION}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  dkb add deno https://github.com/denoland/docs.git
-  dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
-  dkb add gramio https://github.com/gramiojs/documentation.git docs --version-url https://github.com/gramiojs/gramio.git
+  # Add entire repository
+  dkb add https://github.com/denoland/docs.git
+  
+  # Add specific paths using shorthand notation
+  dkb add tailwindlabs/tailwindcss.com/src/docs
+  dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
+  
+  # Add specific paths using full URLs
+  dkb add https://github.com/astral-sh/uv/tree/main/docs
+  
+  # Other commands
   dkb remove tailwind
   dkb update
   dkb status""",
@@ -813,12 +885,9 @@ def main():
 
     # Add command
     add_parser = subparsers.add_parser("add", help="Add a new repository")
-    add_parser.add_argument("name", help="Name for the repository")
-    add_parser.add_argument("url", help="Git repository URL")
     add_parser.add_argument(
-        "paths",
-        nargs="*",
-        help="Path(s) to fetch from the repository (empty for entire repo)",
+        "url",
+        help="Repository URL (e.g., github.com/owner/repo/path or owner/repo/path)",
     )
     add_parser.add_argument(
         "-b", "--branch", help="Branch to fetch (default: repository's default branch)"
@@ -852,7 +921,7 @@ def main():
     # Execute command
     try:
         if args.command == "add":
-            manager.add(args.name, args.url, args.paths, args.branch, args.version_url)
+            manager.add(args.url, args.branch, args.version_url)
         elif args.command == "remove":
             manager.remove(args.name)
         elif args.command == "update":
