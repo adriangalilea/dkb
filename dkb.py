@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -108,12 +107,6 @@ class GitHubProvider(RepositoryProvider):
     
     def fetch_metadata(self, owner: str, repo: str) -> Dict[str, Any]:
         """Fetch repository metadata from GitHub API."""
-        metadata = {
-            "description": "No description available",
-            "default_branch": "main",
-            "latest_version": None,
-        }
-        
         # Try gh CLI first
         if self._has_gh_cli():
             try:
