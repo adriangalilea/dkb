@@ -58,9 +58,11 @@ def run(cmd: list[str], cwd: Path | None = None, suppress_stderr: bool = False) 
     return subprocess.check_output(cmd, cwd=cwd, text=True, stderr=stderr).strip()
 
 
-def get_github_info(url: str) -> tuple[str, str]:
-    """Fetch repository description and latest version from GitHub API.
-    Returns (description, version)."""
+
+
+def get_github_info(url: str) -> tuple[str, str, str]:
+    """Fetch repository description, latest version, and default branch from GitHub API.
+    Returns (description, version, default_branch)."""
     # Extract owner/repo from URL
     parts = url.replace(".git", "").split("/")
     if "github.com" in url:
@@ -98,14 +100,16 @@ def get_github_info(url: str) -> tuple[str, str]:
                     # No releases found - this is normal for many repos
                     version = "-"
 
-                return description, version
+                default_branch = data.get("default_branch", "main")
+                return description, version, default_branch
             except subprocess.CalledProcessError as e:
                 console.print(f"[yellow]⚠ Failed to fetch GitHub data: {e}[/yellow]")
-                return "No description available", "-"
+                return "No description available", "-", "main"
         else:
             # Fallback to direct API calls
             # Get repo info
             api_url = f"https://api.github.com/repos/{owner}/{repo}"
+            default_branch = "main"
             try:
                 req = urllib.request.Request(api_url)
                 req.add_header("Accept", "application/vnd.github.v3+json")
@@ -113,6 +117,7 @@ def get_github_info(url: str) -> tuple[str, str]:
                 with urllib.request.urlopen(req) as response:
                     data = json.loads(response.read().decode())
                     description = data.get("description", "No description available")
+                    default_branch = data.get("default_branch", "main")
             except urllib.error.HTTPError as e:
                 if e.code == 403:
                     response_data = json.loads(e.read().decode())
@@ -146,9 +151,9 @@ def get_github_info(url: str) -> tuple[str, str]:
             except Exception:
                 version = "-"
 
-            return description, version
+            return description, version, default_branch
 
-    return "No description available", "-"
+    return "No description available", "-", "main"
 
 
 class ClaudeMdRepository:
@@ -434,11 +439,11 @@ def update_repo(
         # Get version and description from GitHub API (using version_url for version, docs url for description)
         if progress and task_id is not None:
             progress.update(task_id, description="Getting version info...")
-        desc, version = get_github_info(repo.version_url)
+        desc, version, _ = get_github_info(repo.version_url)
 
         # Also get description from docs repo if different
         if repo.version_url != repo.url:
-            docs_desc, _ = get_github_info(repo.url)
+            docs_desc, _, _ = get_github_info(repo.url)
         else:
             docs_desc = desc
 
@@ -463,7 +468,7 @@ def add_repo(
     name: str,
     url: str,
     paths: list[str],
-    branch: str = "main",
+    branch: str | None = None,
     version_url: str | None = None,
 ) -> None:
     """Add a new repository and fetch its contents."""
@@ -473,11 +478,26 @@ def add_repo(
 
     assert name not in config["repositories"], f"Repository '{name}' already exists"
 
+    # If branch not specified, fetch default branch
+    if branch is None:
+        console.print(f"📦 Adding [cyan]{name}[/cyan]...")
+        with Progress(
+            TextColumn("   "),  # Manual indent
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Detecting default branch...", total=None)
+            _, _, branch = get_github_info(url)
+            progress.update(task, description=f"Using branch: {branch}", completed=True)
+
     # Prepare repo config but don't save yet
     repo = RepoConfig(
         name=name, url=url, branch=branch, paths=paths, version_url=version_url or url
     )
-    console.print(f"📦 Adding [cyan]{name}[/cyan]...")
+    if branch is not None:
+        console.print(f"📦 Adding [cyan]{name}[/cyan]...")
 
     # Try to fetch the repository first
     with Progress(
@@ -689,7 +709,7 @@ def main():
         help="Path(s) to fetch from the repository (empty for entire repo)",
     )
     add_parser.add_argument(
-        "-b", "--branch", default="main", help="Branch to fetch (default: main)"
+        "-b", "--branch", default=None, help="Branch to fetch (default: repository's default branch)"
     )
     add_parser.add_argument(
         "--version-url",
