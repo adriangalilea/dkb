@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Knowledge Base Manager - Fetch and manage documentation from Git repositories."""
+"""Knowledge Base Manager - Clean architecture rewrite."""
 
 import argparse
 import json
@@ -9,13 +9,15 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Dict, Any, Tuple
 import urllib.request
 import urllib.parse
-import importlib.metadata
 import html
+import importlib.metadata
 
 from rich.console import Console
 from rich.panel import Panel
@@ -31,11 +33,10 @@ VERSION = METADATA["Version"]
 DESCRIPTION = METADATA["Summary"]
 NAME = METADATA["Name"]
 
-PROGRAM_DIR = Path(__file__).parent
 # XDG Base Directory Specification
 XDG_DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 DATA_DIR = XDG_DATA_HOME / "dkb"
-CONFIG = DATA_DIR / "config.json"
+CONFIG_FILE = DATA_DIR / "config.json"
 
 CLAUDE_GUIDANCE = """## 📚 Search Tips
 
@@ -43,725 +44,825 @@ Use `LS` first to see file structure - repos may use .md, .mdx, .rst or other fo
 """
 
 
-@dataclass
-class RepoConfig:
-    name: str
-    url: str
-    branch: str
-    paths: list[str]
-    version_url: str
+class RepositoryProvider(ABC):
+    """Abstract base for repository providers."""
+    
+    @abstractmethod
+    def parse_url(self, url: str) -> Optional[Tuple[str, str]]:
+        """Parse URL and return (owner, repo) or None if invalid."""
+        pass
+    
+    @abstractmethod
+    def fetch_metadata(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Fetch repository metadata."""
+        pass
+    
+    @abstractmethod
+    def normalize_url(self, url: str) -> str:
+        """Normalize URL to canonical form."""
+        pass
+    
+    @abstractmethod
+    def supports_url(self, url: str) -> bool:
+        """Check if this provider supports the given URL."""
+        pass
 
 
-def run(cmd: list[str], cwd: Path | None = None, suppress_stderr: bool = False) -> str:
-    """Run a shell command and return output."""
-    stderr = subprocess.DEVNULL if suppress_stderr else None
-    return subprocess.check_output(cmd, cwd=cwd, text=True, stderr=stderr).strip()
-
-
-
-
-def get_github_info(url: str) -> tuple[str, str, str]:
-    """Fetch repository description, latest version, and default branch from GitHub API.
-    Returns (description, version, default_branch)."""
-    # Extract owner/repo from URL
-    parts = url.replace(".git", "").split("/")
-    if "github.com" in url:
-        owner, repo = parts[-2], parts[-1]
-
-        # Check if gh CLI is available
+class GitHubProvider(RepositoryProvider):
+    """GitHub repository provider."""
+    
+    def supports_url(self, url: str) -> bool:
+        """Check if URL is a GitHub URL."""
+        parsed = urllib.parse.urlparse(url)
+        return parsed.netloc in ["github.com", "www.github.com"]
+    
+    def parse_url(self, url: str) -> Optional[Tuple[str, str]]:
+        """Parse GitHub URL and return (owner, repo)."""
+        if not self.supports_url(url):
+            return None
+            
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path.strip("/")
+        
+        # Remove .git suffix if present
+        if path.endswith(".git"):
+            path = path[:-4]
+        
+        parts = path.split("/")
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        
+        return None
+    
+    def normalize_url(self, url: str) -> str:
+        """Normalize GitHub URL to HTTPS with .git suffix."""
+        if not self.supports_url(url):
+            return url
+            
+        owner_repo = self.parse_url(url)
+        if not owner_repo:
+            return url
+            
+        owner, repo = owner_repo
+        return f"https://github.com/{owner}/{repo}.git"
+    
+    def fetch_metadata(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Fetch repository metadata from GitHub API."""
+        metadata = {
+            "description": "No description available",
+            "default_branch": "main",
+            "latest_version": None,
+        }
+        
+        # Try gh CLI first
+        if self._has_gh_cli():
+            try:
+                return self._fetch_with_gh(owner, repo)
+            except Exception:
+                pass
+        
+        # Fallback to direct API
+        return self._fetch_with_api(owner, repo)
+    
+    def _has_gh_cli(self) -> bool:
+        """Check if gh CLI is available."""
         try:
             subprocess.run(["gh", "--version"], capture_output=True, check=True)
-            use_gh = True
+            return True
         except (subprocess.CalledProcessError, FileNotFoundError):
-            use_gh = False
-
-        if use_gh:
-            # Use gh CLI for authenticated requests
-            try:
-                # Get repo info
-                repo_data = subprocess.check_output(
-                    ["gh", "api", f"repos/{owner}/{repo}"], text=True
-                )
-                data = json.loads(repo_data)
-                description = data.get("description", "No description available")
-
-                # Get latest release
-                try:
-                    release_data = subprocess.check_output(
-                        ["gh", "api", f"repos/{owner}/{repo}/releases/latest"],
-                        text=True,
-                        stderr=subprocess.DEVNULL,  # Suppress 404 errors
-                    )
-                    release = json.loads(release_data)
-                    version = release.get("tag_name", "").lstrip("v")
-                    if not version:
-                        version = "-"
-                except subprocess.CalledProcessError:
-                    # No releases found - this is normal for many repos
-                    version = "-"
-
-                default_branch = data.get("default_branch", "main")
-                return description, version, default_branch
-            except subprocess.CalledProcessError as e:
-                console.print(f"[yellow]⚠ Failed to fetch GitHub data: {e}[/yellow]")
-                return "No description available", "-", "main"
-        else:
-            # Fallback to direct API calls
-            # Get repo info
-            api_url = f"https://api.github.com/repos/{owner}/{repo}"
-            default_branch = "main"
-            try:
-                req = urllib.request.Request(api_url)
-                req.add_header("Accept", "application/vnd.github.v3+json")
-                req.add_header("User-Agent", f"dkb/{VERSION}")
-                with urllib.request.urlopen(req) as response:
-                    data = json.loads(response.read().decode())
-                    description = data.get("description", "No description available")
-                    default_branch = data.get("default_branch", "main")
-            except urllib.error.HTTPError as e:
-                if e.code == 403:
-                    response_data = json.loads(e.read().decode())
-                    if "rate limit" in response_data.get("message", "").lower():
-                        console.print(
-                            "[yellow]⚠ GitHub API rate limit exceeded. Install gh CLI for authenticated requests.[/yellow]"
-                        )
-                description = "No description available"
-            except Exception:
-                description = "No description available"
-
-            # Get latest release
-            release_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-            try:
-                req = urllib.request.Request(release_url)
-                req.add_header("Accept", "application/vnd.github.v3+json")
-                req.add_header("User-Agent", f"dkb/{VERSION}")
-                with urllib.request.urlopen(req) as response:
-                    data = json.loads(response.read().decode())
-                    version = data.get("tag_name", "").lstrip("v")
-                    if not version:
-                        version = "-"
-            except urllib.error.HTTPError as e:
-                if e.code == 403:
-                    response_data = json.loads(e.read().decode())
-                    if "rate limit" in response_data.get("message", "").lower():
-                        console.print(
-                            "[yellow]⚠ GitHub API rate limit exceeded. Install gh CLI for authenticated requests.[/yellow]"
-                        )
-                version = "-"
-            except Exception:
-                version = "-"
-
-            return description, version, default_branch
-
-    return "No description available", "-", "main"
-
-
-class ClaudeMdRepository:
-    """Data access layer for CLAUDE.md repository management."""
-
-    def __init__(self):
-        self.claude_md = DATA_DIR / "CLAUDE.md"
-
-    def _read_repos(self) -> dict[str, dict]:
-        """Read all repositories from CLAUDE.md."""
-        if not self.claude_md.exists():
-            return {}
-
-        content = self.claude_md.read_text()
-        repos = {}
-
-        # Parse XML structure
-        import xml.etree.ElementTree as ET
-
-        # Extract repositories section
-        start = content.find("<repositories>")
-        end = content.find("</repositories>") + len("</repositories>")
-        if start == -1 or end == -1:
-            return {}
-
-        xml_content = content[start:end]
-        root = ET.fromstring(xml_content)
-
-        for item in root.findall("item"):
-            name = item.find("name").text
-            repos[name] = {
-                "description": item.find("description").text,
-                "version": item.find("version").text,
-                "location": item.find("location").text,
-            }
-
-        return repos
-
-    def _write_repos(self, repos: dict[str, dict]) -> None:
-        """Write repositories back to CLAUDE.md."""
-        if not self.claude_md.exists():
-            # Create new file with full structure
-            generate_claude_md()
-            return
-
-        content = self.claude_md.read_text()
-
-        # Build new repositories section
-        repo_lines = ["<repositories>"]
-        for name in sorted(repos.keys()):
-            repo = repos[name]
-            repo_lines.extend(
-                [
-                    "<item>",
-                    f"  <name>{html.escape(name)}</name>",
-                    f"  <description>{html.escape(repo['description'])}</description>",
-                    f"  <version>{html.escape(repo['version'])}</version>",
-                    f"  <location>{html.escape(repo['location'])}</location>",
-                    "</item>",
-                ]
-            )
-        repo_lines.append("</repositories>")
-
-        # Replace repositories section
-        start = content.find("<repositories>")
-        end = content.find("</repositories>") + len("</repositories>")
-
-        if start != -1 and end != -1:
-            new_content = content[:start] + "\n".join(repo_lines) + content[end:]
-            self.claude_md.write_text(new_content)
-
-    def add(self, name: str, repo_info: dict) -> None:
-        """Add a repository."""
-        repos = self._read_repos()
-
-        repos[name] = {
-            "description": repo_info.get("description", "No description available"),
-            "version": repo_info.get("version", "-"),
-            "location": str(DATA_DIR / name),
-        }
-
-        self._write_repos(repos)
-
-    def remove(self, name: str) -> None:
-        """Remove a repository."""
-        repos = self._read_repos()
-        repos.pop(name, None)
-        self._write_repos(repos)
-
-    def update(self, name: str, repo_info: dict) -> None:
-        """Update a repository."""
-        self.add(name, repo_info)  # add handles updates too
-
-
-# Create singleton instance
-claude_md_repo = ClaudeMdRepository()
-
-
-def add_repo_to_claude_md(name: str, repo_info: dict) -> None:
-    """Add a repository to CLAUDE.md."""
-    claude_md_repo.add(name, repo_info)
-    console.print(f"   [green]✓[/green] Updated {DATA_DIR}/CLAUDE.md")
-
-
-def remove_repo_from_claude_md(name: str) -> None:
-    """Remove a repository from CLAUDE.md."""
-    claude_md_repo.remove(name)
-
-
-def update_repo_in_claude_md(name: str, repo_info: dict) -> None:
-    """Update a repository in CLAUDE.md."""
-    claude_md_repo.update(name, repo_info)
-
-
-def generate_claude_md() -> None:
-    """Generate CLAUDE.md file with repository information."""
-    console.print()  # Add newline before command output
-    console.print("📚 Updating documentation index...")
-    with Progress(
-        TextColumn("   "),  # Manual indent
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Loading repositories...", total=None)
-
-        with open(CONFIG) as f:
-            config = json.load(f)
-
-        # Get help output without colors
-        env = os.environ.copy()
-        env["NO_COLOR"] = "1"
-        help_output = subprocess.check_output(
-            [sys.executable, __file__, "-h"], text=True, env=env
+            return False
+    
+    def _fetch_with_gh(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Fetch metadata using gh CLI."""
+        # Get repo info
+        repo_data = subprocess.check_output(
+            ["gh", "api", f"repos/{owner}/{repo}"], 
+            text=True
         )
+        data = json.loads(repo_data)
+        
+        metadata = {
+            "description": data.get("description", "No description available"),
+            "default_branch": data.get("default_branch", "main"),
+            "latest_version": None,
+        }
+        
+        # Try to get latest release
+        try:
+            release_data = subprocess.check_output(
+                ["gh", "api", f"repos/{owner}/{repo}/releases/latest"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            release = json.loads(release_data)
+            version = release.get("tag_name", "").lstrip("v")
+            if version:
+                metadata["latest_version"] = version
+        except subprocess.CalledProcessError:
+            pass
+        
+        return metadata
+    
+    def _fetch_with_api(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Fetch metadata using GitHub API directly."""
+        metadata = {
+            "description": "No description available",
+            "default_branch": "main",
+            "latest_version": None,
+        }
+        
+        # Get repo info
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        try:
+            req = urllib.request.Request(api_url)
+            req.add_header("Accept", "application/vnd.github.v3+json")
+            req.add_header("User-Agent", f"dkb/{VERSION}")
+            
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                metadata["description"] = data.get("description", "No description available")
+                metadata["default_branch"] = data.get("default_branch", "main")
+        except Exception:
+            pass
+        
+        # Get latest release
+        release_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+        try:
+            req = urllib.request.Request(release_url)
+            req.add_header("Accept", "application/vnd.github.v3+json")
+            req.add_header("User-Agent", f"dkb/{VERSION}")
+            
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                version = data.get("tag_name", "").lstrip("v")
+                if version:
+                    metadata["latest_version"] = version
+        except Exception:
+            pass
+        
+        return metadata
 
-        # Strip any remaining ANSI codes
-        import re
 
-        help_output = re.sub(r"\033\[[0-9;]*m", "", help_output)
+class ProviderRegistry:
+    """Registry for repository providers."""
+    
+    def __init__(self):
+        self.providers = [
+            GitHubProvider(),
+            # Add more providers here (GitLab, Bitbucket, etc)
+        ]
+    
+    def get_provider(self, url: str) -> Optional[RepositoryProvider]:
+        """Get the appropriate provider for a URL."""
+        for provider in self.providers:
+            if provider.supports_url(url):
+                return provider
+        return None
 
+
+# Global provider registry
+provider_registry = ProviderRegistry()
+
+
+@dataclass
+class GitRepository:
+    """Represents a git repository with all its metadata."""
+    url: str
+    provider: str
+    owner: str
+    repo: str
+    description: str = "No description available"
+    default_branch: str = "main"
+    latest_version: Optional[str] = None
+    
+    @classmethod
+    def from_url(cls, url: str) -> 'GitRepository':
+        """Create GitRepository from URL by fetching metadata."""
+        provider = provider_registry.get_provider(url)
+        if not provider:
+            raise ValueError(f"Unsupported repository URL: {url}")
+        
+        # Normalize URL
+        normalized_url = provider.normalize_url(url)
+        
+        # Parse URL
+        parsed = provider.parse_url(normalized_url)
+        if not parsed:
+            raise ValueError(f"Invalid repository URL: {url}")
+        
+        owner, repo = parsed
+        
+        # Fetch metadata
+        metadata = provider.fetch_metadata(owner, repo)
+        
+        return cls(
+            url=normalized_url,
+            provider=provider.__class__.__name__.replace("Provider", "").lower(),
+            owner=owner,
+            repo=repo,
+            description=metadata["description"],
+            default_branch=metadata["default_branch"],
+            latest_version=metadata["latest_version"],
+        )
+    
+    @property
+    def display_name(self) -> str:
+        """Get display name for the repository."""
+        return f"{self.owner}/{self.repo}"
+
+
+@dataclass
+class RepositoryConfig:
+    """Configuration for a repository in dkb."""
+    name: str
+    repository: GitRepository
+    paths: list[str] = field(default_factory=list)
+    branch: Optional[str] = None
+    version_source: Optional[GitRepository] = None
+    
+    # Runtime metadata
+    last_updated: Optional[datetime] = None
+    last_commit: Optional[str] = None
+    
+    @property
+    def effective_branch(self) -> str:
+        """Get the branch to use (specified or default)."""
+        return self.branch or self.repository.default_branch
+    
+    @property
+    def effective_version(self) -> Optional[str]:
+        """Get the version to display."""
+        if self.version_source:
+            return self.version_source.latest_version
+        return self.repository.latest_version
+    
+    @property
+    def effective_description(self) -> str:
+        """Get the description to display."""
+        return self.repository.description
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON storage."""
+        data = {
+            "url": self.repository.url,
+            "branch": self.branch,
+            "paths": self.paths,
+            "description": self.repository.description,
+        }
+        
+        if self.version_source:
+            data["version_url"] = self.version_source.url
+        
+        if self.last_updated:
+            data["last_updated"] = self.last_updated.isoformat()
+        
+        if self.last_commit:
+            data["commit"] = self.last_commit
+        
+        if self.effective_version:
+            data["version"] = self.effective_version
+            
+        return data
+    
+    @classmethod
+    def from_dict(cls, name: str, data: Dict[str, Any]) -> 'RepositoryConfig':
+        """Create from dictionary (JSON storage) WITHOUT fetching metadata."""
+        # Parse URL to get owner/repo for display
+        provider = provider_registry.get_provider(data["url"])
+        if provider:
+            parsed = provider.parse_url(data["url"])
+            owner = parsed[0] if parsed else "unknown"
+            repo = parsed[1] if parsed else "unknown"
+            provider_name = provider.__class__.__name__.replace("Provider", "").lower()
+        else:
+            owner = "unknown"
+            repo = "unknown" 
+            provider_name = "unknown"
+        
+        # Create repository object from stored data (no API calls!)
+        repository = GitRepository(
+            url=data["url"],
+            provider=provider_name,
+            owner=owner,
+            repo=repo,
+            description=data.get("description", "No description available"),
+            default_branch=data.get("branch", "main"),
+            latest_version=data.get("version"),
+        )
+        
+        # Handle version source if different
+        version_source = None
+        if "version_url" in data and data["version_url"] != data["url"]:
+            # Just parse it, don't fetch
+            vs_provider = provider_registry.get_provider(data["version_url"])
+            if vs_provider:
+                vs_parsed = vs_provider.parse_url(data["version_url"])
+                vs_owner = vs_parsed[0] if vs_parsed else "unknown"
+                vs_repo = vs_parsed[1] if vs_parsed else "unknown"
+                version_source = GitRepository(
+                    url=data["version_url"],
+                    provider=vs_provider.__class__.__name__.replace("Provider", "").lower(),
+                    owner=vs_owner,
+                    repo=vs_repo,
+                    description="Version source",
+                    default_branch="main",
+                    latest_version=data.get("version"),
+                )
+        
+        # Create config
+        config = cls(
+            name=name,
+            repository=repository,
+            paths=data.get("paths", []),
+            branch=data.get("branch"),
+            version_source=version_source,
+        )
+        
+        # Set runtime metadata if available
+        if "last_updated" in data:
+            config.last_updated = datetime.fromisoformat(data["last_updated"])
+        
+        if "commit" in data:
+            config.last_commit = data["commit"]
+        
+        return config
+
+
+class ConfigManager:
+    """Manages dkb configuration."""
+    
+    def __init__(self, config_file: Path):
+        self.config_file = config_file
+        self._ensure_config()
+    
+    def _ensure_config(self):
+        """Ensure config file exists."""
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        if not self.config_file.exists():
+            self.config_file.write_text('{"repositories": {}}')
+    
+    def load(self) -> Dict[str, RepositoryConfig]:
+        """Load all repository configurations."""
+        with open(self.config_file) as f:
+            data = json.load(f)
+        
+        configs = {}
+        for name, repo_data in data.get("repositories", {}).items():
+            try:
+                configs[name] = RepositoryConfig.from_dict(name, repo_data)
+            except Exception as e:
+                console.print(f"[yellow]Warning: Failed to load {name}: {e}[/yellow]")
+        
+        return configs
+    
+    def save(self, configs: Dict[str, RepositoryConfig]):
+        """Save all repository configurations."""
+        data = {
+            "repositories": {
+                name: config.to_dict() 
+                for name, config in configs.items()
+            }
+        }
+        
+        with open(self.config_file, "w") as f:
+            json.dump(data, f, indent=2)
+    
+    def add(self, config: RepositoryConfig):
+        """Add a repository configuration."""
+        configs = self.load()
+        if config.name in configs:
+            raise ValueError(f"Repository '{config.name}' already exists")
+        
+        configs[config.name] = config
+        self.save(configs)
+    
+    def remove(self, name: str):
+        """Remove a repository configuration."""
+        configs = self.load()
+        if name not in configs:
+            raise ValueError(f"Repository '{name}' not found")
+        
+        del configs[name]
+        self.save(configs)
+    
+    def get(self, name: str) -> RepositoryConfig:
+        """Get a specific repository configuration."""
+        configs = self.load()
+        if name not in configs:
+            raise ValueError(f"Repository '{name}' not found")
+        
+        return configs[name]
+
+
+class ClaudeDocManager:
+    """Manages CLAUDE.md documentation."""
+    
+    def __init__(self, data_dir: Path):
+        self.data_dir = data_dir
+        self.claude_md = data_dir / "CLAUDE.md"
+    
+    def update(self, configs: Dict[str, RepositoryConfig]):
+        """Update CLAUDE.md with current repositories."""
         content = ["# Knowledge Base Context\n"]
         content.append(CLAUDE_GUIDANCE)
         content.append("## Documentation Cache\n")
-        content.append(f"Local documentation cache at `{DATA_DIR}/` with:\n")
+        content.append(f"Local documentation cache at `{self.data_dir}/` with:\n")
         content.append("<repositories>")
-        # Add repository descriptions with paths
-        repos = sorted(config["repositories"].items())
-        for i, (name, repo_info) in enumerate(repos):
-            progress.update(task, description=f"Processing {name}...")
-            desc = repo_info.get("description", "No description available")
-            version = repo_info.get("version", "-")
-            content.append("<item>")
-            content.append(f"  <name>{html.escape(name)}</name>")
-            content.append(f"  <description>{html.escape(desc)}</description>")
-            content.append(f"  <version>{html.escape(version)}</version>")
-            content.append(f"  <location>{html.escape(str(DATA_DIR / name))}</location>")
-            content.append("</item>")
+        
+        for name in sorted(configs.keys()):
+            config = configs[name]
+            content.extend([
+                "<item>",
+                f"  <name>{html.escape(name)}</name>",
+                f"  <description>{html.escape(config.effective_description)}</description>",
+                f"  <version>{html.escape(config.effective_version or '-')}</version>",
+                f"  <location>{html.escape(str(self.data_dir / name))}</location>",
+                "</item>",
+            ])
+        
         content.append("</repositories>")
         content.append("\n## Usage\n")
         content.append("```")
-        content.append(help_output.strip())
+        content.append(self._get_help_text())
         content.append("```")
+        
+        self.claude_md.write_text("\n".join(content))
+        console.print(f"   [green]✓[/green] Updated {self.claude_md}")
+        
+        # Check if user has ~/CLAUDE.md and prompt to add import
+        self._check_user_claude_md(len(configs))
+    
+    def _get_help_text(self) -> str:
+        """Get help text for inclusion in CLAUDE.md."""
+        env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+        
+        help_output = subprocess.check_output(
+            [sys.executable, __file__, "-h"], 
+            text=True, 
+            env=env
+        )
+        
+        # Strip ANSI codes
+        import re
+        return re.sub(r"\033\[[0-9;]*m", "", help_output).strip()
+    
+    def _check_user_claude_md(self, repo_count: int):
+        """Check if user has ~/CLAUDE.md and prompt to add import."""
+        user_claude_md = Path.home() / "CLAUDE.md"
+        import_line = f"@{self.claude_md}"
+        
+        if user_claude_md.exists():
+            user_content = user_claude_md.read_text()
+            if import_line not in user_content:
+                console.print()
+                panel_content = f"""[yellow]Your ~/CLAUDE.md doesn't import dkb's CLAUDE.md[/yellow]
 
-        # Write CLAUDE.md to dkb data directory
-        claude_md = DATA_DIR / "CLAUDE.md"
-        claude_md.write_text("\n".join(content))
+Adding [cyan]@{self.claude_md}[/cyan] would give Claude Code access to:
 
-        progress.update(task, description="Writing CLAUDE.md...", completed=True)
-
-        console.print(f"   [green]✓[/green] Updated {claude_md}")
-
-    # Check if ~/CLAUDE.md exists and has the import
-    user_claude_md = Path.home() / "CLAUDE.md"
-    import_line = f"@{claude_md}"
-
-    if user_claude_md.exists():
-        user_content = user_claude_md.read_text()
-        if import_line not in user_content:
-            console.print()
-            panel_content = f"""[yellow]Your ~/CLAUDE.md doesn't import dkb's CLAUDE.md[/yellow]
-
-Adding [cyan]@{claude_md}[/cyan] would give Claude Code access to:
-
-  • All your [bold]{len(config["repositories"])}[/bold] documentation repos
+  • All your [bold]{repo_count}[/bold] documentation repos
   • dkb usage instructions for fetching new docs
 """
-            console.print(
-                Panel(
-                    panel_content,
-                    title="💡 Claude Code Integration",
-                    border_style="yellow",
+                console.print(
+                    Panel(
+                        panel_content,
+                        title="💡 Claude Code Integration",
+                        border_style="yellow",
+                    )
                 )
-            )
-
-            if Confirm.ask("\nWould you like to add it?", default=False):
-                # Add import at the end of the file
-                with open(user_claude_md, "a") as f:
-                    f.write(f"\n{import_line}\n")
-                console.print("[green]✓[/green] Added import to ~/CLAUDE.md")
-    else:
-        console.print()
-        panel_content = f"""[yellow]No ~/CLAUDE.md found[/yellow]
+                
+                if Confirm.ask("\nWould you like to add it?", default=False):
+                    # Add import at the end of the file
+                    with open(user_claude_md, "a") as f:
+                        f.write(f"\n{import_line}\n")
+                    console.print("[green]✓[/green] Added import to ~/CLAUDE.md")
+        else:
+            console.print()
+            panel_content = f"""[yellow]No ~/CLAUDE.md found[/yellow]
 
 Create one with:
-[cyan]echo '@{claude_md}' > ~/CLAUDE.md[/cyan]
+[cyan]echo '@{self.claude_md}' > ~/CLAUDE.md[/cyan]
 
 This gives Claude Code access to your documentation cache"""
-        console.print(
-            Panel(panel_content, title="💡 Claude Code Setup", border_style="yellow")
-        )
+            console.print(
+                Panel(panel_content, title="💡 Claude Code Setup", border_style="yellow")
+            )
 
 
-def update_repo(
-    repo: RepoConfig, progress: Progress | None = None, task_id=None
-) -> tuple[bool, dict]:
-    """Update a single repository. Returns (updated, metadata)."""
-    kb_dir = DATA_DIR / repo.name
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-
-        # Clone to temp directory
-        run(
-            [
-                "git",
-                "clone",
-                "--depth=1",
-                "--branch",
-                repo.branch,
-                "--filter=blob:none",
-                "--quiet",
-                repo.url,
-                str(tmp_path / "repo"),
-            ],
-            suppress_stderr=True,
-        )
-        repo_path = tmp_path / "repo"
-
-        # Get commit info from docs repo
-        commit = run(["git", "rev-parse", "HEAD"], cwd=repo_path)
-
-        # Load config to check old commit
-        with open(CONFIG) as f:
-            config = json.load(f)
-
-        old_commit = None
-        if repo.name in config["repositories"]:
-            old_commit = config["repositories"][repo.name].get("commit")
-
-        # Clear existing directory
-        if kb_dir.exists():
-            shutil.rmtree(kb_dir)
-        kb_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy only the requested paths
-        if not repo.paths:  # Empty paths means clone entire repo
-            # Copy entire repository contents
-            for item in repo_path.iterdir():
-                if item.name == ".git":  # Skip .git directory
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, kb_dir / item.name)
-                else:
-                    shutil.copy2(item, kb_dir / item.name)
-        else:
-            for path in repo.paths:
-                src = repo_path / path
-                assert src.exists(), f"Path '{path}' not found in repository"
-
-                if src.is_dir():
-                    # Copy directory contents directly to kb_dir
-                    for item in src.iterdir():
-                        if item.is_dir():
-                            shutil.copytree(item, kb_dir / item.name)
-                        else:
-                            shutil.copy2(item, kb_dir / item.name)
-                else:
-                    # Copy single file
-                    shutil.copy2(src, kb_dir / src.name)
-
-        # Get version and description from GitHub API (using version_url for version, docs url for description)
-        if progress and task_id is not None:
-            progress.update(task_id, description="Getting version info...")
-        desc, version, _ = get_github_info(repo.version_url)
-
-        # Also get description from docs repo if different
-        if repo.version_url != repo.url:
-            docs_desc, _, _ = get_github_info(repo.url)
-        else:
-            docs_desc = desc
-
-        # Create metadata dict
-        metadata = {
-            "last_updated": datetime.now().isoformat(),
-            "commit": commit,
-            "version": version,
-            "description": docs_desc,
-        }
-
-        # Update config with metadata (only if repo already exists)
-        if repo.name in config["repositories"]:
-            config["repositories"][repo.name].update(metadata)
-            with open(CONFIG, "w") as f:
-                json.dump(config, f, indent=2)
-
-        return old_commit != commit, metadata
-
-
-def add_repo(
-    name: str,
-    url: str,
-    paths: list[str],
-    branch: str | None = None,
-    version_url: str | None = None,
-) -> None:
-    """Add a new repository and fetch its contents."""
-    console.print()  # Add newline before command output
-    with open(CONFIG) as f:
-        config = json.load(f)
-
-    assert name not in config["repositories"], f"Repository '{name}' already exists"
-
-    # If branch not specified, fetch default branch
-    if branch is None:
-        console.print(f"📦 Adding [cyan]{name}[/cyan]...")
+class RepositoryManager:
+    """Manages repository operations."""
+    
+    def __init__(self, data_dir: Path):
+        self.data_dir = data_dir
+        self.config_manager = ConfigManager(CONFIG_FILE)
+        self.claude_manager = ClaudeDocManager(data_dir)
+    
+    def add(self, name: str, url: str, paths: list[str], 
+            branch: Optional[str] = None, version_url: Optional[str] = None):
+        """Add a new repository."""
+        console.print(f"\n📦 Adding [cyan]{name}[/cyan]...")
+        
+        # Create repository objects
         with Progress(
-            TextColumn("   "),  # Manual indent
+            TextColumn("   "),
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console,
             transient=True,
         ) as progress:
-            task = progress.add_task("Detecting default branch...", total=None)
-            _, _, branch = get_github_info(url)
-            progress.update(task, description=f"Using branch: {branch}", completed=True)
-
-    # Prepare repo config but don't save yet
-    repo = RepoConfig(
-        name=name, url=url, branch=branch, paths=paths, version_url=version_url or url
-    )
-    if branch is not None:
-        console.print(f"📦 Adding [cyan]{name}[/cyan]...")
-
-    # Try to fetch the repository first
-    with Progress(
-        TextColumn("   "),  # Manual indent
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True,
-    ) as progress:
-        try:
-            task = progress.add_task("Cloning repository...", total=None)
-            updated, metadata = update_repo(repo, progress, task)
-
-            # Only save config after successful fetch
-            config["repositories"][name] = {
-                "url": url,
-                "branch": branch,
-                "paths": paths,
-                "version_url": version_url
-                or url,  # Default to main URL if not specified
-                **metadata,  # Include all metadata from update_repo
-            }
-
-            with open(CONFIG, "w") as f:
-                json.dump(config, f, indent=2)
-
-            version = metadata.get("version", "-")
-            version_str = f"{version}" if version != "-" else ""
-            console.print(f"   [green]✓[/green] {version_str}")
-
-        except subprocess.CalledProcessError as e:
-            console.print(f"   [red]✗[/red] Failed to fetch {name}")
-            console.print(
-                "      [red]Error:[/red] Git command failed - check branch name or repository access"
+            task = progress.add_task("Fetching repository metadata...", total=None)
+            
+            repository = GitRepository.from_url(url)
+            
+            version_source = None
+            if version_url and version_url != url:
+                progress.update(task, description="Fetching version source metadata...")
+                version_source = GitRepository.from_url(version_url)
+            
+            progress.update(task, description="Creating configuration...")
+            
+            # Create config
+            config = RepositoryConfig(
+                name=name,
+                repository=repository,
+                paths=paths,
+                branch=branch,
+                version_source=version_source,
             )
-            if "does not exist" in str(e):
-                console.print(
-                    f"      [yellow]Hint:[/yellow] Branch '{branch}' may not exist. Try a different branch with -b"
-                )
-            raise SystemExit(1)
-        except Exception as e:
-            console.print(f"   [red]✗[/red] Failed to add {name}: {str(e)}")
-            raise SystemExit(1)
-
-    # Add to CLAUDE.md
-    add_repo_to_claude_md(name, config["repositories"][name])
-
-
-def remove_repo(name: str) -> None:
-    """Remove a repository from config and delete its directory."""
-    console.print()  # Add newline before command output
-    with open(CONFIG) as f:
-        config = json.load(f)
-
-    assert name in config["repositories"], f"Repository '{name}' not found"
-
-    del config["repositories"][name]
-
-    with open(CONFIG, "w") as f:
-        json.dump(config, f, indent=2)
-
-    repo_path = DATA_DIR / name
-    if repo_path.exists():
-        shutil.rmtree(repo_path)
-    console.print(f"[red]✗[/red] {name} removed")
-
-    # Remove from CLAUDE.md
-    remove_repo_from_claude_md(name)
-
-
-def update_repos(names: list[str] | None = None) -> None:
-    """Update all repositories or specific ones if names provided."""
-    console.print()  # Add newline before command output
-    with open(CONFIG) as f:
-        config = json.load(f)
-
-    updated = []
-    repos_to_update = names if names else config["repositories"].keys()
-
-    for name in repos_to_update:
-        assert name in config["repositories"], f"Repository '{name}' not found"
-
-        cfg = config["repositories"][name]
-        repo = RepoConfig(
-            name=name,
-            url=cfg["url"],
-            branch=cfg.get("branch", "main"),
-            paths=cfg["paths"],
-            version_url=cfg.get("version_url", cfg["url"]),  # Default to main URL
-        )
-
-        console.print(f"Updating [cyan]{name}[/cyan]...", end="")
-        repo_updated, _ = update_repo(repo)
-        if repo_updated:
-            updated.append(name)
-            console.print(" [green]✓ updated[/green]")
+            
+            # Clone and update
+            progress.update(task, description="Cloning repository...")
+            self._update_repository(config, progress, task)
+            
+            # Save config
+            self.config_manager.add(config)
+            
+            # Update CLAUDE.md
+            configs = self.config_manager.load()
+            self.claude_manager.update(configs)
+            
+            version_str = f" {config.effective_version}" if config.effective_version else ""
+            console.print(f"   [green]✓[/green]{version_str}")
+    
+    def remove(self, name: str):
+        """Remove a repository."""
+        console.print()
+        
+        # Remove from config
+        self.config_manager.remove(name)
+        
+        # Remove directory
+        repo_path = self.data_dir / name
+        if repo_path.exists():
+            shutil.rmtree(repo_path)
+        
+        console.print(f"[red]✗[/red] {name} removed")
+        
+        # Update CLAUDE.md
+        configs = self.config_manager.load()
+        self.claude_manager.update(configs)
+    
+    def update(self, names: Optional[list[str]] = None):
+        """Update repositories."""
+        console.print()
+        configs = self.config_manager.load()
+        
+        if names:
+            # Update specific repositories
+            configs_to_update = {
+                name: configs[name] 
+                for name in names 
+                if name in configs
+            }
         else:
-            console.print(" [dim]- unchanged[/dim]")
-
-    if updated:
-        console.print(f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]")
-        # Update CLAUDE.md for changed repos
-        with open(CONFIG) as f:
-            config = json.load(f)
-        for name in updated:
-            update_repo_in_claude_md(name, config["repositories"][name])
-    elif names is None:
-        # Even if nothing updated, regenerate CLAUDE.md during full update
-        generate_claude_md()
-
-
-def show_status() -> None:
-    """Display status of all repositories."""
-    console.print()  # Add newline before command output
-    with open(CONFIG) as f:
-        config = json.load(f)
-
-    if not config["repositories"]:
-        console.print("[yellow]No repositories found[/yellow]")
-        return
-
-    table = Table(title="Knowledge Base Status", title_style="bold")
-    table.add_column("Repository", style="cyan", no_wrap=True)
-    table.add_column("Version", style="green")
-    table.add_column("Docs", style="blue")
-    table.add_column("Source", style="dim")
-    table.add_column("Last Updated", style="yellow")
-
-    for name, repo in sorted(config["repositories"].items()):
-        if "last_updated" in repo:
-            updated = datetime.fromisoformat(repo["last_updated"])
-            age = datetime.now() - updated
-
-            hours = age.total_seconds() / 3600
-            if hours < 1:
-                age_str = f"{int(age.total_seconds() / 60)}m ago"
-            elif hours < 24:
-                age_str = f"{int(hours)}h ago"
+            # Update all
+            configs_to_update = configs
+        
+        updated = []
+        for name, config in configs_to_update.items():
+            console.print(f"Updating [cyan]{name}[/cyan]...", end="")
+            
+            old_commit = config.last_commit
+            self._update_repository(config)
+            
+            if config.last_commit != old_commit:
+                updated.append(name)
+                console.print(" [green]✓ updated[/green]")
             else:
-                age_str = f"{int(hours / 24)}d ago"
-
-            version = repo.get("version", "-")
-        else:
-            age_str = "never"
-            version = "-"
-
-        # Extract owner/repo from URLs
-        docs_url = repo.get("url", "")
-        version_url = repo.get("version_url", docs_url)
-
-        # Format docs URL
-        if "github.com" in docs_url:
-            parts = docs_url.replace(".git", "").split("/")
-            docs_repo = f"{parts[-2]}/{parts[-1]}"
-        else:
-            docs_repo = docs_url
-
-        # Format version URL (source)
-        if version_url != docs_url and "github.com" in version_url:
-            parts = version_url.replace(".git", "").split("/")
-            source_repo = f"{parts[-2]}/{parts[-1]}"
-        else:
-            source_repo = "-"
-
-        table.add_row(name, version, docs_repo, source_repo, age_str)
-
-    console.print(table)
-
-
-def run_cron(interval: int = 6 * 60 * 60) -> None:
-    """Run continuous update loop."""
-    while True:
-        console.print(
-            f"[bold]Running update at {time.strftime('%Y-%m-%d %H:%M:%S')}[/bold]"
-        )
-        update_repos()
-        console.print(f"[dim]Next update in {interval // 3600} hours[/dim]\n")
-        time.sleep(interval)
+                console.print(" [dim]- unchanged[/dim]")
+        
+        # Save all configs
+        self.config_manager.save(configs)
+        
+        # Update CLAUDE.md
+        self.claude_manager.update(configs)
+        
+        if updated:
+            console.print(f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]")
+    
+    def status(self):
+        """Show status of all repositories."""
+        console.print()
+        configs = self.config_manager.load()
+        
+        if not configs:
+            console.print("[yellow]No repositories found[/yellow]")
+            return
+        
+        table = Table(title="Knowledge Base Status", title_style="bold")
+        table.add_column("Repository", style="cyan", no_wrap=True)
+        table.add_column("Version", style="green")
+        table.add_column("Docs", style="blue")
+        table.add_column("Source", style="dim")
+        table.add_column("Last Updated", style="yellow")
+        
+        for name, config in sorted(configs.items()):
+            # Calculate age
+            if config.last_updated:
+                age = datetime.now() - config.last_updated
+                hours = age.total_seconds() / 3600
+                
+                if hours < 1:
+                    age_str = f"{int(age.total_seconds() / 60)}m ago"
+                elif hours < 24:
+                    age_str = f"{int(hours)}h ago"
+                else:
+                    age_str = f"{int(hours / 24)}d ago"
+            else:
+                age_str = "never"
+            
+            # Version source display
+            source_display = "-"
+            if config.version_source:
+                source_display = config.version_source.display_name
+            
+            table.add_row(
+                name,
+                config.effective_version or "-",
+                config.repository.display_name,
+                source_display,
+                age_str
+            )
+        
+        console.print(table)
+    
+    def _update_repository(self, config: RepositoryConfig, 
+                          progress: Optional[Progress] = None, 
+                          task_id: Optional[Any] = None):
+        """Update a single repository."""
+        repo_dir = self.data_dir / config.name
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            
+            # Clone repository
+            subprocess.run(
+                [
+                    "git", "clone",
+                    "--depth=1",
+                    "--branch", config.effective_branch,
+                    "--filter=blob:none",
+                    "--quiet",
+                    config.repository.url,
+                    str(tmp_path / "repo"),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            
+            repo_path = tmp_path / "repo"
+            
+            # Get commit hash
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit = result.stdout.strip()
+            
+            # Clear and recreate directory
+            if repo_dir.exists():
+                shutil.rmtree(repo_dir)
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy requested paths
+            if not config.paths:
+                # Copy entire repository
+                for item in repo_path.iterdir():
+                    if item.name == ".git":
+                        continue
+                    
+                    if item.is_dir():
+                        shutil.copytree(item, repo_dir / item.name)
+                    else:
+                        shutil.copy2(item, repo_dir / item.name)
+            else:
+                # Copy specific paths
+                for path in config.paths:
+                    src = repo_path / path
+                    if not src.exists():
+                        raise ValueError(f"Path '{path}' not found in repository")
+                    
+                    if src.is_dir():
+                        # Copy directory contents
+                        for item in src.iterdir():
+                            if item.is_dir():
+                                shutil.copytree(item, repo_dir / item.name)
+                            else:
+                                shutil.copy2(item, repo_dir / item.name)
+                    else:
+                        # Copy single file
+                        shutil.copy2(src, repo_dir / src.name)
+            
+            # Update metadata
+            config.last_updated = datetime.now()
+            config.last_commit = commit
 
 
 def main():
-    """Main entry point with argument parsing."""
+    """Main entry point."""
     parser = argparse.ArgumentParser(
         prog=NAME,
-        description=f"\033[1;33m{NAME}\033[0m \033[2;33mv{VERSION}\033[0m\n\n{DESCRIPTION}",
+        description=f"{NAME} v{VERSION}\n\n{DESCRIPTION}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-\033[2mExamples:\033[0m
-  \033[34mdkb add\033[0m \033[2mdeno https://github.com/denoland/docs.git\033[0m
-  \033[34mdkb add\033[0m \033[2mtailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs\033[0m
-  \033[34mdkb add\033[0m \033[2mgramio https://github.com/gramiojs/documentation.git docs --version-url https://github.com/gramiojs/gramio.git\033[0m
-  \033[34mdkb remove\033[0m \033[2mtailwind\033[0m
-  \033[34mdkb update\033[0m
-  \033[34mdkb status\033[0m
-        """,
+        epilog="""Examples:
+  dkb add deno https://github.com/denoland/docs.git
+  dkb add tailwind https://github.com/tailwindlabs/tailwindcss.com.git src/docs
+  dkb add gramio https://github.com/gramiojs/documentation.git docs --version-url https://github.com/gramiojs/gramio.git
+  dkb remove tailwind
+  dkb update
+  dkb status""",
     )
-
+    
     subparsers = parser.add_subparsers(
-        dest="command", help="Available commands", required=True
+        dest="command", 
+        help="Available commands", 
+        required=True
     )
-
+    
     # Add command
     add_parser = subparsers.add_parser("add", help="Add a new repository")
     add_parser.add_argument("name", help="Name for the repository")
     add_parser.add_argument("url", help="Git repository URL")
     add_parser.add_argument(
-        "paths",
-        nargs="*",
+        "paths", nargs="*",
         help="Path(s) to fetch from the repository (empty for entire repo)",
     )
     add_parser.add_argument(
-        "-b", "--branch", default=None, help="Branch to fetch (default: repository's default branch)"
+        "-b", "--branch", 
+        help="Branch to fetch (default: repository's default branch)"
     )
     add_parser.add_argument(
         "--version-url",
-        help="Source repository URL to fetch version from (e.g., tailwindcss for tailwindcss.com docs)",
+        help="Source repository URL to fetch version from",
     )
-
+    
     # Remove command
     remove_parser = subparsers.add_parser("remove", help="Remove a repository")
     remove_parser.add_argument("name", help="Name of the repository to remove")
-
+    
     # Update command
-    update_parser = subparsers.add_parser("update", help="Update all repositories")
+    update_parser = subparsers.add_parser("update", help="Update repositories")
     update_parser.add_argument(
-        "names", nargs="*", help="Specific repositories to update (default: all)"
+        "names", nargs="*", 
+        help="Specific repositories to update (default: all)"
     )
-
+    
     # Status command
     subparsers.add_parser("status", help="Show status of all repositories")
-
+    
     # Claude command
     subparsers.add_parser("claude", help="Regenerate CLAUDE.md file")
-
-    # Cron command
-    cron_parser = subparsers.add_parser("cron", help="Run continuous update loop")
-    cron_parser.add_argument(
-        "-i",
-        "--interval",
-        type=int,
-        default=6 * 60 * 60,
-        help="Update interval in seconds (default: 6 hours)",
-    )
-
+    
     args = parser.parse_args()
-
-    # Initialize data directory and config if needed
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not CONFIG.exists():
-        CONFIG.write_text('{"repositories": {}}')
-
+    
+    # Create manager
+    manager = RepositoryManager(DATA_DIR)
+    
     # Execute command
-    if args.command == "add":
-        add_repo(args.name, args.url, args.paths, args.branch, args.version_url)
-    elif args.command == "remove":
-        remove_repo(args.name)
-    elif args.command == "update":
-        update_repos(args.names)
-    elif args.command == "status":
-        show_status()
-    elif args.command == "claude":
-        generate_claude_md()
-    elif args.command == "cron":
-        run_cron(args.interval)
+    try:
+        if args.command == "add":
+            manager.add(
+                args.name, 
+                args.url, 
+                args.paths, 
+                args.branch, 
+                args.version_url
+            )
+        elif args.command == "remove":
+            manager.remove(args.name)
+        elif args.command == "update":
+            manager.update(args.names or None)
+        elif args.command == "status":
+            manager.status()
+        elif args.command == "claude":
+            configs = manager.config_manager.load()
+            manager.claude_manager.update(configs)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
