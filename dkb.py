@@ -15,6 +15,7 @@ from pathlib import Path
 import urllib.request
 import urllib.parse
 import importlib.metadata
+import html
 
 from rich.console import Console
 from rich.panel import Panel
@@ -202,10 +203,10 @@ class ClaudeMdRepository:
             repo_lines.extend(
                 [
                     "<item>",
-                    f"  <name>{name}</name>",
-                    f"  <description>{repo['description']}</description>",
-                    f"  <version>{repo['version']}</version>",
-                    f"  <location>{repo['location']}</location>",
+                    f"  <name>{html.escape(name)}</name>",
+                    f"  <description>{html.escape(repo['description'])}</description>",
+                    f"  <version>{html.escape(repo['version'])}</version>",
+                    f"  <location>{html.escape(repo['location'])}</location>",
                     "</item>",
                 ]
             )
@@ -302,10 +303,10 @@ def generate_claude_md() -> None:
             desc = repo_info.get("description", "No description available")
             version = repo_info.get("version", "-")
             content.append("<item>")
-            content.append(f"  <name>{name}</name>")
-            content.append(f"  <description>{desc}</description>")
-            content.append(f"  <version>{version}</version>")
-            content.append(f"  <location>{DATA_DIR}/{name}</location>")
+            content.append(f"  <name>{html.escape(name)}</name>")
+            content.append(f"  <description>{html.escape(desc)}</description>")
+            content.append(f"  <version>{html.escape(version)}</version>")
+            content.append(f"  <location>{html.escape(str(DATA_DIR / name))}</location>")
             content.append("</item>")
         content.append("</repositories>")
         content.append("\n## Usage\n")
