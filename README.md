@@ -32,21 +32,20 @@ pipx install dkb
 
 ```bash
 $ dkb -h
-usage: dkb [-h] {add,remove,update,status,claude,cron} ...
+usage: dkb [-h] {add,remove,update,status,claude} ...
 
-dkb v0.2.6
+dkb v0.3.0
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
 positional arguments:
-  {add,remove,update,status,claude,cron}
+  {add,remove,update,status,claude}
                         Available commands
     add                 Add a new repository
     remove              Remove a repository
-    update              Update all repositories
+    update              Update repositories
     status              Show status of all repositories
     claude              Regenerate CLAUDE.md file
-    cron                Run continuous update loop
 
 options:
   -h, --help            show this help message and exit
@@ -62,11 +61,9 @@ Examples:
 # Add a repository (entire repo)
 $ dkb add deno https://github.com/denoland/docs.git
 
-Fetching deno from https://github.com/denoland/docs.git
-Branch: main
-Paths: <entire repository>
-✓ deno fetched
-✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
+📦 Adding deno...
+   ✓ 2.4.2
+   ✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
 
 # Show status with rich formatting
 $ dkb status

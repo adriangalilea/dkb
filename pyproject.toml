@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dkb"
-version = "0.2.6"
+version = "0.3.0"
 description = "Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code"
 readme = "README.md"
 authors = [{name = "Adrian Galilea", email = "adriangalilea@gmail.com"}]
