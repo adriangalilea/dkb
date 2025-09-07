@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude} ...
 
-dkb v1.1.0
+dkb v1.1.1
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 

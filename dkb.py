@@ -729,6 +729,24 @@ class RepositoryManager:
             console.print(f"Updating [cyan]{name}[/cyan]...", end="")
 
             old_commit = config.last_commit
+
+            # Also update version metadata
+            provider = provider_registry.get_provider(config.repository.url)
+            if provider:
+                metadata = provider.fetch_metadata(
+                    config.repository.owner, config.repository.repo
+                )
+                config.repository.latest_version = metadata.get("latest_version")
+
+                # Update version source if it exists
+                if config.version_source:
+                    vs_metadata = provider.fetch_metadata(
+                        config.version_source.owner, config.version_source.repo
+                    )
+                    config.version_source.latest_version = vs_metadata.get(
+                        "latest_version"
+                    )
+
             self._update_repository(config)
 
             if config.last_commit != old_commit:
@@ -806,6 +824,18 @@ class RepositoryManager:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
 
+            # If branch is None, fetch metadata to get default branch
+            branch_to_use = config.branch
+            if branch_to_use is None:
+                provider = provider_registry.get_provider(config.repository.url)
+                if provider:
+                    metadata = provider.fetch_metadata(
+                        config.repository.owner, config.repository.repo
+                    )
+                    branch_to_use = metadata.get("default_branch", "main")
+                else:
+                    branch_to_use = "main"
+
             # Clone repository
             subprocess.run(
                 [
@@ -813,7 +843,7 @@ class RepositoryManager:
                     "clone",
                     "--depth=1",
                     "--branch",
-                    config.effective_branch,
+                    branch_to_use,
                     "--filter=blob:none",
                     "--quiet",
                     config.repository.url,
