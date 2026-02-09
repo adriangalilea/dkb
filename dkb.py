@@ -1054,7 +1054,6 @@ def main():
     # Create manager
     manager = RepositoryManager(DATA_DIR)
 
-    # Execute command
     try:
         if args.command == "add":
             manager.add(args.url, args.branch, args.version_url)
@@ -1067,6 +1066,9 @@ def main():
         elif args.command == "claude":
             configs = manager.config_manager.load()
             manager.claude_manager.update(configs)
+    except KeyboardInterrupt:
+        console.print("\n[dim]interrupted[/dim]")
+        sys.exit(130)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
