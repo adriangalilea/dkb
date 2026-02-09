@@ -111,3 +111,7 @@ Configuration file: `$XDG_DATA_HOME/dkb/config.json`
 - ⚡ **Smart skip** - Unchanged repos detected via `git ls-remote` without cloning
 - 📂 **Sparse checkout** - Repos with paths only fetch the files they need
 - 🤖 **Claude Code integration** - Auto-generates CLAUDE.md for seamless AI assistance
+
+## Roadmap
+
+- **Claude Code skill** - Migrate from `@CLAUDE.md` injection to an installable Claude Code skill/plugin for tighter integration
