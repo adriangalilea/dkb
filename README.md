@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude} ...
 
-dkb v1.3.0
+dkb v1.3.1
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -109,4 +109,5 @@ Configuration file: `$XDG_DATA_HOME/dkb/config.json`
 - 📦 **Version tracking** - Track versions from a different repository with `--version-url`
 - 🚀 **Parallel updates** - All repos update concurrently with live progress spinners
 - ⚡ **Smart skip** - Unchanged repos detected via `git ls-remote` without cloning
+- 📂 **Sparse checkout** - Repos with paths only fetch the files they need
 - 🤖 **Claude Code integration** - Auto-generates CLAUDE.md for seamless AI assistance

@@ -909,69 +909,83 @@ class RepositoryManager:
         branch_to_use = branch or config.branch or config.repository.default_branch
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
+            repo_path = Path(tmpdir) / "repo"
 
-            # Clone repository
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth=1",
-                    "--branch",
-                    branch_to_use,
-                    "--filter=blob:none",
-                    "--quiet",
-                    config.repository.url,
-                    str(tmp_path / "repo"),
-                ],
-                check=True,
-                capture_output=True,
-            )
+            if config.paths:
+                # Sparse checkout: only fetch the paths we need
+                subprocess.run(
+                    [
+                        "git", "clone",
+                        "--depth=1", "--filter=blob:none",
+                        "--sparse", "--no-checkout",
+                        "--branch", branch_to_use,
+                        "--quiet",
+                        config.repository.url,
+                        str(repo_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "sparse-checkout", "set", *config.paths],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "checkout"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                # Full shallow clone
+                subprocess.run(
+                    [
+                        "git", "clone",
+                        "--depth=1", "--filter=blob:none",
+                        "--branch", branch_to_use,
+                        "--quiet",
+                        config.repository.url,
+                        str(repo_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
 
-            repo_path = tmp_path / "repo"
-
-            # Get commit hash
-            result = subprocess.run(
+            commit = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
                 check=True,
-            )
-            commit = result.stdout.strip()
+            ).stdout.strip()
 
             # Clear and recreate directory
             if repo_dir.exists():
                 shutil.rmtree(repo_dir)
             repo_dir.mkdir(parents=True, exist_ok=True)
 
-            # Copy requested paths
             if not config.paths:
-                # Copy entire repository
                 for item in repo_path.iterdir():
                     if item.name == ".git":
                         continue
-
                     if item.is_dir():
                         shutil.copytree(item, repo_dir / item.name)
                     else:
                         shutil.copy2(item, repo_dir / item.name)
             else:
-                # Copy specific paths
                 for path in config.paths:
                     src = repo_path / path
                     if not src.exists():
                         raise ValueError(f"Path '{path}' not found in repository")
-
                     if src.is_dir():
-                        # Copy directory contents
                         for item in src.iterdir():
                             if item.is_dir():
                                 shutil.copytree(item, repo_dir / item.name)
                             else:
                                 shutil.copy2(item, repo_dir / item.name)
                     else:
-                        # Copy single file
                         shutil.copy2(src, repo_dir / src.name)
 
             config.last_updated = datetime.now()
