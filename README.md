@@ -34,7 +34,7 @@ pipx install dkb
 $ dkb -h
 usage: dkb [-h] {add,remove,update,status,claude} ...
 
-dkb v1.1.1
+dkb v1.3.0
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
@@ -80,16 +80,16 @@ $ dkb status
 │ uv           │ 0.8.0   │ astral-sh/uv             │ -                       │ 33m ago      │
 └──────────────┴─────────┴──────────────────────────┴─────────────────────────┴──────────────┘
 
-# Update all repositories
+# Update all repositories (parallel with live progress)
 $ dkb update
 
-Updating deno... ✓ updated
-Updating nextjs... - unchanged
-Updating tailwind... - unchanged
-Updating uv... - unchanged
+  ✓ deno            updated
+  - nextjs          unchanged
+  - tailwind        unchanged
+  - uv              unchanged
 
 Updated: deno
-✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
+   ✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
 ```
 
 ## Configuration
@@ -107,4 +107,6 @@ Configuration file: `$XDG_DATA_HOME/dkb/config.json`
   - Shorthand: `tailwindlabs/tailwindcss.com/src/docs`
   - Classic: `https://github.com/denoland/docs.git`
 - 📦 **Version tracking** - Track versions from a different repository with `--version-url`
+- 🚀 **Parallel updates** - All repos update concurrently with live progress spinners
+- ⚡ **Smart skip** - Unchanged repos detected via `git ls-remote` without cloning
 - 🤖 **Claude Code integration** - Auto-generates CLAUDE.md for seamless AI assistance

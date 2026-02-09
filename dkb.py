@@ -8,7 +8,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -383,7 +385,7 @@ class RepositoryConfig:
             owner=owner,
             repo=repo,
             description=data.get("description", "No description available"),
-            default_branch=data.get("branch", "main"),
+            default_branch=data.get("branch") or "main",
             latest_version=data.get("version"),
         )
 
@@ -678,7 +680,7 @@ class RepositoryManager:
 
             # Clone and update
             progress.update(task, description="Cloning repository...")
-            self._update_repository(config, progress, task)
+            self._clone_repository(config)
 
             # Save config
             self.config_manager.add(config)
@@ -710,33 +712,34 @@ class RepositoryManager:
         configs = self.config_manager.load()
         self.claude_manager.update(configs)
 
-    def update(self, names: Optional[list[str]] = None):
-        """Update repositories."""
-        console.print()
-        configs = self.config_manager.load()
-
-        if names:
-            # Update specific repositories
-            configs_to_update = {
-                name: configs[name] for name in names if name in configs
-            }
-        else:
-            # Update all
-            configs_to_update = configs
-
-        updated = []
-        for name, config in configs_to_update.items():
-            console.print(f"Updating [cyan]{name}[/cyan]...", end="")
-
+    def _update_one(
+        self,
+        name: str,
+        config: RepositoryConfig,
+        progress: Progress,
+        task_id,
+        pad: int,
+    ) -> bool:
+        """Worker for parallel update. Returns True if content changed."""
+        padded = name.ljust(pad)
+        try:
             branch_to_use = config.branch or config.repository.default_branch
 
-            # Fast path: ls-remote before any API calls
-            remote_commit = self._get_remote_commit(config.repository.url, branch_to_use)
+            progress.update(task_id, description=f"[cyan]{padded}[/cyan] checking...")
+            remote_commit = self._get_remote_commit(
+                config.repository.url, branch_to_use
+            )
             if remote_commit and remote_commit == config.last_commit:
-                console.print(" [dim]- unchanged[/dim]")
-                continue
+                progress.update(
+                    task_id,
+                    description=f"[dim]- {padded} unchanged[/dim]",
+                    completed=1,
+                )
+                return False
 
-            # Only fetch metadata for repos that actually changed
+            progress.update(
+                task_id, description=f"[cyan]{padded}[/cyan] fetching metadata..."
+            )
             provider = provider_registry.get_provider(config.repository.url)
             if provider:
                 metadata = provider.fetch_metadata(
@@ -754,15 +757,76 @@ class RepositoryManager:
                         "latest_version"
                     )
 
-            changed = self._update_repository(config, branch_override=branch_to_use)
+            progress.update(
+                task_id, description=f"[cyan]{padded}[/cyan] cloning..."
+            )
+            self._clone_repository(config, branch_to_use)
 
-            if changed:
-                updated.append(name)
-                console.print(" [green]✓ updated[/green]")
-            else:
-                console.print(" [dim]- unchanged[/dim]")
+            progress.update(
+                task_id,
+                description=f"[green]✓ {padded} updated[/green]",
+                completed=1,
+            )
+            return True
+        except Exception as e:
+            progress.update(
+                task_id,
+                description=f"[red]✗ {padded} {e}[/red]",
+                completed=1,
+            )
+            return False
 
-        # Only save and regenerate CLAUDE.md if something changed
+    def update(self, names: Optional[list[str]] = None):
+        """Update repositories in parallel."""
+        console.print()
+        configs = self.config_manager.load()
+
+        if names:
+            configs_to_update = {
+                name: configs[name] for name in names if name in configs
+            }
+        else:
+            configs_to_update = configs
+
+        if not configs_to_update:
+            console.print("[yellow]No repositories to update[/yellow]")
+            return
+
+        pad = max(len(n) for n in configs_to_update)
+        updated = []
+        lock = threading.Lock()
+
+        progress = Progress(
+            SpinnerColumn(finished_text=" "),
+            TextColumn("{task.description}"),
+            console=console,
+        )
+
+        with progress:
+            tasks = {}
+            for name in configs_to_update:
+                padded = name.ljust(pad)
+                tid = progress.add_task(
+                    f"[cyan]{padded}[/cyan] waiting...", total=1
+                )
+                tasks[name] = tid
+
+            def worker(name: str, config: RepositoryConfig) -> None:
+                changed = self._update_one(
+                    name, config, progress, tasks[name], pad
+                )
+                if changed:
+                    with lock:
+                        updated.append(name)
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [
+                    pool.submit(worker, name, config)
+                    for name, config in configs_to_update.items()
+                ]
+                for future in as_completed(futures):
+                    future.result()
+
         if updated:
             self.config_manager.save(configs)
             self.claude_manager.update(configs)
@@ -770,7 +834,6 @@ class RepositoryManager:
                 f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]"
             )
         else:
-            # Still save configs for version metadata updates
             self.config_manager.save(configs)
 
     def status(self):
@@ -836,22 +899,14 @@ class RepositoryManager:
             pass
         return None
 
-    def _update_repository(
+    def _clone_repository(
         self,
         config: RepositoryConfig,
-        progress: Optional[Progress] = None,
-        task_id: Optional[Any] = None,
-        branch_override: Optional[str] = None,
+        branch: Optional[str] = None,
     ):
-        """Update a single repository. Returns True if content changed."""
+        """Clone a repository and copy contents to data dir."""
         repo_dir = self.data_dir / config.name
-
-        branch_to_use = branch_override or config.branch or config.repository.default_branch
-
-        # Fast path: check remote commit before cloning
-        remote_commit = self._get_remote_commit(config.repository.url, branch_to_use)
-        if remote_commit and remote_commit == config.last_commit:
-            return False
+        branch_to_use = branch or config.branch or config.repository.default_branch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -919,11 +974,8 @@ class RepositoryManager:
                         # Copy single file
                         shutil.copy2(src, repo_dir / src.name)
 
-            # Update metadata
             config.last_updated = datetime.now()
             config.last_commit = commit
-
-        return True
 
 
 def main():
