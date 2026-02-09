@@ -728,17 +728,24 @@ class RepositoryManager:
         for name, config in configs_to_update.items():
             console.print(f"Updating [cyan]{name}[/cyan]...", end="")
 
-            old_commit = config.last_commit
+            branch_to_use = config.branch or config.repository.default_branch
 
-            # Also update version metadata
+            # Fast path: ls-remote before any API calls
+            remote_commit = self._get_remote_commit(config.repository.url, branch_to_use)
+            if remote_commit and remote_commit == config.last_commit:
+                console.print(" [dim]- unchanged[/dim]")
+                continue
+
+            # Only fetch metadata for repos that actually changed
             provider = provider_registry.get_provider(config.repository.url)
             if provider:
                 metadata = provider.fetch_metadata(
                     config.repository.owner, config.repository.repo
                 )
                 config.repository.latest_version = metadata.get("latest_version")
+                if config.branch is None:
+                    branch_to_use = metadata.get("default_branch", branch_to_use)
 
-                # Update version source if it exists
                 if config.version_source:
                     vs_metadata = provider.fetch_metadata(
                         config.version_source.owner, config.version_source.repo
@@ -747,24 +754,24 @@ class RepositoryManager:
                         "latest_version"
                     )
 
-            self._update_repository(config)
+            changed = self._update_repository(config, branch_override=branch_to_use)
 
-            if config.last_commit != old_commit:
+            if changed:
                 updated.append(name)
                 console.print(" [green]✓ updated[/green]")
             else:
                 console.print(" [dim]- unchanged[/dim]")
 
-        # Save all configs
-        self.config_manager.save(configs)
-
-        # Update CLAUDE.md
-        self.claude_manager.update(configs)
-
+        # Only save and regenerate CLAUDE.md if something changed
         if updated:
+            self.config_manager.save(configs)
+            self.claude_manager.update(configs)
             console.print(
                 f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]"
             )
+        else:
+            # Still save configs for version metadata updates
+            self.config_manager.save(configs)
 
     def status(self):
         """Show status of all repositories."""
@@ -812,29 +819,42 @@ class RepositoryManager:
 
         console.print(table)
 
+    def _get_remote_commit(self, url: str, branch: str) -> Optional[str]:
+        """Get the latest commit hash from remote without cloning."""
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", url, f"refs/heads/{branch}"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            line = result.stdout.strip()
+            if line:
+                return line.split()[0]
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        return None
+
     def _update_repository(
         self,
         config: RepositoryConfig,
         progress: Optional[Progress] = None,
         task_id: Optional[Any] = None,
+        branch_override: Optional[str] = None,
     ):
-        """Update a single repository."""
+        """Update a single repository. Returns True if content changed."""
         repo_dir = self.data_dir / config.name
+
+        branch_to_use = branch_override or config.branch or config.repository.default_branch
+
+        # Fast path: check remote commit before cloning
+        remote_commit = self._get_remote_commit(config.repository.url, branch_to_use)
+        if remote_commit and remote_commit == config.last_commit:
+            return False
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-
-            # If branch is None, fetch metadata to get default branch
-            branch_to_use = config.branch
-            if branch_to_use is None:
-                provider = provider_registry.get_provider(config.repository.url)
-                if provider:
-                    metadata = provider.fetch_metadata(
-                        config.repository.owner, config.repository.repo
-                    )
-                    branch_to_use = metadata.get("default_branch", "main")
-                else:
-                    branch_to_use = "main"
 
             # Clone repository
             subprocess.run(
@@ -902,6 +922,8 @@ class RepositoryManager:
             # Update metadata
             config.last_updated = datetime.now()
             config.last_commit = commit
+
+        return True
 
 
 def main():
