@@ -73,6 +73,10 @@ class SkillManager:
                 READING_DOCS,
                 "## Managing the cache (dkb CLI)",
                 "",
+                "`dkb status [name...] --json` prints full configuration "
+                "(url, paths, version source, location) for scripting; "
+                "never read config.json by hand.",
+                "",
                 "```",
                 self._get_help_text(),
                 "```",

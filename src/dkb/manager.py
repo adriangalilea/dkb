@@ -1,5 +1,6 @@
 """Repository operations: add, remove, update, status, clone."""
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -248,20 +249,37 @@ class RepositoryManager:
         else:
             self.config_manager.save(configs)
 
-    def status(self):
-        """Show status of all repositories."""
-        console.print()
+    def status(self, names: Optional[list[str]] = None, as_json: bool = False):
+        """Show status of repositories: table for humans, --json for tools."""
         configs = self.config_manager.load()
 
+        if names:
+            missing = [n for n in names if n not in configs]
+            if missing:
+                raise ValueError(f"Repository '{missing[0]}' not found")
+            configs = {n: configs[n] for n in names}
+
+        if as_json:
+            payload = {
+                name: {
+                    **config.to_dict(),
+                    "location": str(self.data_dir / name),
+                }
+                for name, config in sorted(configs.items())
+            }
+            print(json.dumps(payload, indent=2))
+            return
+
+        console.print()
         if not configs:
             console.print("[yellow]No repositories found[/yellow]")
             return
 
         table = Table(title="Knowledge Base Status", title_style="bold")
-        table.add_column("Repository", style="cyan", no_wrap=True)
-        table.add_column("Version", style="green")
-        table.add_column("Docs", style="blue")
-        table.add_column("Source", style="dim")
+        table.add_column("Repository", style="cyan", overflow="fold")
+        table.add_column("Version", style="green", overflow="fold")
+        table.add_column("Docs", style="blue", overflow="fold")
+        table.add_column("Source", style="dim", overflow="fold")
         table.add_column("Last Updated", style="yellow")
 
         for name, config in sorted(configs.items()):

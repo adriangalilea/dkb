@@ -63,7 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
         "names", nargs="*", help="Specific repositories to update (default: all)"
     )
 
-    subparsers.add_parser("status", help="Show status of all repositories")
+    status_parser = subparsers.add_parser("status", help="Show status of repositories")
+    status_parser.add_argument(
+        "names", nargs="*", help="Specific repositories (default: all)"
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print full configuration (url, paths, version source, location) as JSON",
+    )
 
     subparsers.add_parser("skill", help="Regenerate the Claude Code skill")
 
@@ -84,7 +92,7 @@ def main():
         elif args.command == "update":
             manager.update(args.names or None)
         elif args.command == "status":
-            manager.status()
+            manager.status(args.names or None, args.json)
         elif args.command == "skill":
             configs = manager.config_manager.load()
             manager.skill_manager.update(configs)
