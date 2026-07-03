@@ -5,16 +5,8 @@ Local documentation manager for vibe coding with Claude Code.
 
 > [!NOTE]
 > ✨ **Perfect for Claude Code**
-> 
-> `dkb` automatically generates a `CLAUDE.md` file that provides context about your local documentation cache and `dkb` usage instructions.
-> 
-> ```diff
-> # ~/CLAUDE.md
-> + @~/.local/share/dkb/CLAUDE.md
-> ```
-> Now on your next Claude Code session it will know how to use it.
-
-![Claude integration](claude.png)
+>
+> `dkb` maintains a skill at `~/.claude/skills/dkb/SKILL.md`. The skill description (always visible to the agent) carries the catalogue of cached repos, so Claude always knows what docs are available locally without running a command; the skill body loads on demand with versions, locations, and usage.
 
 > Local .md files > MCP
 
@@ -32,20 +24,20 @@ pipx install dkb
 
 ```bash
 $ dkb -h
-usage: dkb [-h] {add,remove,update,status,claude} ...
+usage: dkb [-h] {add,remove,update,status,skill} ...
 
-dkb v1.3.1
+dkb v2.0.0
 
 Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
 
 positional arguments:
-  {add,remove,update,status,claude}
+  {add,remove,update,status,skill}
                         Available commands
     add                 Add a new repository
     remove              Remove a repository
     update              Update repositories
     status              Show status of all repositories
-    claude              Regenerate CLAUDE.md file
+    skill               Regenerate the Claude Code skill
 
 options:
   -h, --help            show this help message and exit
@@ -55,6 +47,7 @@ Examples:
   dkb add tailwindlabs/tailwindcss.com/src/docs
   dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
   dkb add https://github.com/astral-sh/uv/tree/main/docs
+  dkb add https://codeberg.org/owner/repo/src/branch/main/docs
   dkb remove tailwind
   dkb update
   dkb status
@@ -64,7 +57,7 @@ $ dkb add https://github.com/denoland/docs.git
 
 📦 Adding docs...
    ✓ 2.4.2
-   ✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
+   ✓ Updated /Users/you/.claude/skills/dkb/SKILL.md
 
 # Show status with rich formatting
 $ dkb status
@@ -89,7 +82,7 @@ $ dkb update
   - uv              unchanged
 
 Updated: deno
-   ✓ Updated /Users/you/.local/share/dkb/CLAUDE.md
+   ✓ Updated /Users/you/.claude/skills/dkb/SKILL.md
 ```
 
 ## Configuration
@@ -106,12 +99,9 @@ Configuration file: `$XDG_DATA_HOME/dkb/config.json`
   - Full URLs: `https://github.com/astral-sh/uv/tree/main/docs`
   - Shorthand: `tailwindlabs/tailwindcss.com/src/docs`
   - Classic: `https://github.com/denoland/docs.git`
+- 🏠 **Gitea/Forgejo support** - Works with codeberg.org and self-hosted forges: `dkb add https://code.haverbeke.berlin/wordgard/website/src/branch/main/site/docs`
 - 📦 **Version tracking** - Track versions from a different repository with `--version-url`
 - 🚀 **Parallel updates** - All repos update concurrently with live progress spinners
 - ⚡ **Smart skip** - Unchanged repos detected via `git ls-remote` without cloning
 - 📂 **Sparse checkout** - Repos with paths only fetch the files they need
-- 🤖 **Claude Code integration** - Auto-generates CLAUDE.md for seamless AI assistance
-
-## Roadmap
-
-- **Claude Code skill** - Migrate from `@CLAUDE.md` injection to an installable Claude Code skill/plugin for tighter integration
+- 🤖 **Claude Code skill** - Maintains `~/.claude/skills/dkb/SKILL.md`; the always-visible description indexes the catalogue so the agent knows what's cached without running anything
