@@ -105,3 +105,7 @@ Configuration file: `$XDG_DATA_HOME/dkb/config.json`
 - ⚡ **Smart skip** - Unchanged repos detected via `git ls-remote` without cloning
 - 📂 **Sparse checkout** - Repos with paths only fetch the files they need
 - 🤖 **Claude Code skill** - Maintains `~/.claude/skills/dkb/SKILL.md`; the always-visible description indexes the catalogue so the agent knows what's cached without running anything
+
+## Roadmap
+
+- **Local repos** - `dkb add ~/Developer/my-lib` symlinking the live checkout into the cache, so first-party libraries in the catalogue point at the working copy instead of a lagging remote clone

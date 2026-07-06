@@ -22,7 +22,8 @@ READING_DOCS = """## Reading docs
 
 Each `<location>` is a plain directory on disk; read it with your file tools directly, no dkb command needed:
 
-- `<structure>` lists the top-level entries (dirs end with `/`) so you can jump straight to the right area
+- The path is deterministic: `{data_dir}/<name>`. NEVER search the filesystem for it (no find/locate/ls hunting) - go straight there
+- Start with the repo's README or `<structure>` (top-level entries, dirs end with `/`) to orient
 - Grep the location for API names, options, or error messages to land on the exact page
 - Glob `**/*.md*` (formats vary per repo: .md, .mdx, .rst) to enumerate pages when grep is too narrow
 - Read files directly once located; these are the exact docs for the cached version, prefer them over memory or web fetches
@@ -47,7 +48,10 @@ class SkillManager:
             "",
             "# Developer Knowledge Base",
             "",
-            f"Local documentation cache at `{self.data_dir}/`:",
+            f"Every repo below is on disk at `{self.data_dir}/<name>`. "
+            "To use one, Read/Grep/Glob that path directly - do not run dkb "
+            "to find it, do not search the filesystem, do not answer from "
+            "memory.",
             "",
             "<repositories>",
         ]
@@ -70,7 +74,7 @@ class SkillManager:
             [
                 "</repositories>",
                 "",
-                READING_DOCS,
+                READING_DOCS.format(data_dir=self.data_dir),
                 "## Managing the cache (dkb CLI)",
                 "",
                 "`dkb status [name...] --json` prints full configuration "

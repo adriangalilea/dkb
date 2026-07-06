@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -270,18 +271,11 @@ class RepositoryManager:
             print(json.dumps(payload, indent=2))
             return
 
-        console.print()
         if not configs:
             console.print("[yellow]No repositories found[/yellow]")
             return
 
-        table = Table(title="Knowledge Base Status", title_style="bold")
-        table.add_column("Repository", style="cyan", overflow="fold")
-        table.add_column("Version", style="green", overflow="fold")
-        table.add_column("Docs", style="blue", overflow="fold")
-        table.add_column("Source", style="dim", overflow="fold")
-        table.add_column("Last Updated", style="yellow")
-
+        rows = []
         for name, config in sorted(configs.items()):
             if config.last_updated:
                 age = datetime.now() - config.last_updated
@@ -300,13 +294,43 @@ class RepositoryManager:
             if config.version_source:
                 source_display = config.version_source.display_name
 
-            table.add_row(
-                name,
-                config.effective_version or "-",
-                config.repository.display_name,
-                source_display,
-                age_str,
+            rows.append(
+                (
+                    name,
+                    config.effective_version or "-",
+                    str(self.data_dir / name),
+                    config.repository.display_name,
+                    source_display,
+                    age_str,
+                )
             )
+
+        # Piped output (agents, scripts): one greppable line per repo,
+        # location included, no box drawing to mangle
+        if not sys.stdout.isatty():
+            widths = [max(len(row[i]) for row in rows) for i in range(5)]
+            for row in rows:
+                print(
+                    "  ".join(
+                        [*(row[i].ljust(widths[i]) for i in range(5)), row[5]]
+                    ).rstrip()
+                )
+            return
+
+        console.print()
+        table = Table(
+            title="Knowledge Base Status",
+            title_style="bold",
+            caption=f"docs at {self.data_dir}/<name> · full config: dkb status --json",
+        )
+        table.add_column("Repository", style="cyan", overflow="fold")
+        table.add_column("Version", style="green", overflow="fold")
+        table.add_column("Docs", style="blue", overflow="fold")
+        table.add_column("Source", style="dim", overflow="fold")
+        table.add_column("Last Updated", style="yellow")
+
+        for name, version, _, docs, source, age_str in rows:
+            table.add_row(name, version, docs, source, age_str)
 
         console.print(table)
 
