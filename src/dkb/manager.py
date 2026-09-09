@@ -7,7 +7,7 @@ import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -289,7 +289,7 @@ class RepositoryManager:
                 missing.append(name)
                 age_str = "MISSING (dkb update)"
             elif config.last_updated:
-                age = datetime.now(timezone.utc) - config.last_updated
+                age = datetime.now(UTC) - config.last_updated
                 hours = age.total_seconds() / 3600
 
                 if hours < 1:
@@ -458,7 +458,7 @@ class RepositoryManager:
                     else:
                         shutil.copy2(src, repo_dir / src.name)
 
-            config.last_updated = datetime.now(timezone.utc)
+            config.last_updated = datetime.now(UTC)
             config.last_commit = commit
 
 
