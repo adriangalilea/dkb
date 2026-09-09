@@ -87,9 +87,26 @@ Updated: deno
 
 ## Configuration
 
-Docs stored in `$XDG_DATA_HOME/dkb/` (defaults to `~/.local/share/dkb/`)
+Two files, two owners:
 
-Configuration file: `$XDG_DATA_HOME/dkb/config.json`
+| File | Holds | Changes on |
+|---|---|---|
+| `$XDG_CONFIG_HOME/dkb/config.json` (`~/.config/dkb/config.json`) | the catalogue: `url`, `paths`, `branch`, `version_url` per repo | `dkb add` / `dkb remove` |
+| `$XDG_DATA_HOME/dkb/` (`~/.local/share/dkb/`) | the clones, one directory per repo, plus `state.json` (description, version, commit, last update) | `dkb update` |
+
+The catalogue is the declaration and is meant to be tracked in a dotfiles repo. `dkb update` reconciles the cache with it: clones anything declared that is missing, refreshes anything that changed upstream, prunes clones nobody declares, and regenerates the skill. A fresh machine is one `dkb update` away from the same knowledge base. `dkb status` exits 1 while a declared repo has no clone, so it doubles as a drift check.
+
+```jsonc
+// ~/.config/dkb/config.json
+{
+  "repositories": {
+    "next.js": { "url": "https://github.com/vercel/next.js.git", "paths": ["docs"] },
+    "tailwindcss.com": { "url": "https://github.com/tailwindlabs/tailwindcss.com.git", "paths": ["src/docs"] }
+  }
+}
+```
+
+Upgrading from dkb 2: the catalogue used to live in the data dir as one file with the state mixed in. dkb 3 refuses to run while that file exists and prints where each half goes.
 
 ## Features
 

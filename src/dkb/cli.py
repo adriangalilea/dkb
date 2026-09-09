@@ -92,14 +92,15 @@ def main():
         elif args.command == "update":
             manager.update(args.names or None)
         elif args.command == "status":
-            manager.status(args.names or None, args.json)
+            if not manager.status(args.names or None, args.json):
+                sys.exit(1)
         elif args.command == "skill":
             configs = manager.config_manager.load()
             manager.skill_manager.update(configs)
     except KeyboardInterrupt:
         console.print("\n[dim]interrupted[/dim]")
         sys.exit(130)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - the CLI's single error face
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 

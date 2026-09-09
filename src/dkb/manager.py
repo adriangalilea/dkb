@@ -7,18 +7,17 @@ import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from dkb import console
-from dkb.skill import SkillManager
-from dkb.config import CONFIG_FILE, ConfigManager
+from dkb.config import STATE_FILE, ConfigManager
 from dkb.models import GitRepository, RepositoryConfig
 from dkb.providers import provider_registry
+from dkb.skill import SkillManager
 
 
 class RepositoryManager:
@@ -26,15 +25,15 @@ class RepositoryManager:
 
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
-        self.config_manager = ConfigManager(CONFIG_FILE)
+        self.config_manager = ConfigManager()
         self.skill_manager = SkillManager(data_dir)
 
     def add(
         self,
         url: str,
-        branch: Optional[str] = None,
-        version_url: Optional[str] = None,
-        name: Optional[str] = None,
+        branch: str | None = None,
+        version_url: str | None = None,
+        name: str | None = None,
     ):
         """Add a new repository."""
         provider = provider_registry.get_provider(url)
@@ -45,7 +44,7 @@ class RepositoryManager:
         if not parsed:
             raise ValueError(f"Invalid repository URL: {url}")
 
-        owner, repo, extracted_path = parsed
+        _owner, repo, extracted_path = parsed
         paths = [extracted_path] if extracted_path else []
 
         # Explicit name wins, then the version source repo, then the docs repo
@@ -117,9 +116,7 @@ class RepositoryManager:
 
         self.config_manager.remove(name)
 
-        repo_path = self.data_dir / name
-        if repo_path.exists():
-            shutil.rmtree(repo_path)
+        _delete(self.data_dir / name)
 
         console.print(f"[red]✗[/red] {name} removed")
 
@@ -143,7 +140,8 @@ class RepositoryManager:
             remote_commit = self._get_remote_commit(
                 config.repository.url, branch_to_use
             )
-            if remote_commit and remote_commit == config.last_commit:
+            present = (self.data_dir / name).exists()
+            if present and remote_commit and remote_commit == config.last_commit:
                 progress.update(
                     task_id,
                     description=f"[dim]- {padded} unchanged[/dim]",
@@ -186,7 +184,7 @@ class RepositoryManager:
                 completed=1,
             )
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
             progress.update(
                 task_id,
                 description=f"[red]✗ {padded} {e}[/red]",
@@ -194,10 +192,20 @@ class RepositoryManager:
             )
             return False
 
-    def update(self, names: Optional[list[str]] = None):
-        """Update repositories in parallel."""
+    def update(self, names: list[str] | None = None):
+        """Reconcile the cache with the catalogue: fetch declared repos that are
+        missing or changed upstream, prune clones nobody declares, and
+        regenerate the skill. Idempotent; a fresh machine runs it once."""
         console.print()
         configs = self.config_manager.load()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        if not names:
+            for entry in self.data_dir.iterdir():
+                if entry == STATE_FILE or entry.name in configs:
+                    continue
+                _delete(entry)
+                console.print(f"[red]✗[/red] {entry.name} pruned (not in catalogue)")
 
         if names:
             configs_to_update = {
@@ -241,17 +249,16 @@ class RepositoryManager:
                 for future in as_completed(futures):
                     future.result()
 
+        self.config_manager.save(configs)
         if updated:
-            self.config_manager.save(configs)
-            self.skill_manager.update(configs)
             console.print(
                 f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]"
             )
-        else:
-            self.config_manager.save(configs)
+        self.skill_manager.update(configs)
 
-    def status(self, names: Optional[list[str]] = None, as_json: bool = False):
-        """Show status of repositories: table for humans, --json for tools."""
+    def status(self, names: list[str] | None = None, as_json: bool = False) -> bool:
+        """Show status of repositories: table for humans, --json for tools.
+        Returns False when a declared repo has no clone (run `dkb update`)."""
         configs = self.config_manager.load()
 
         if names:
@@ -269,16 +276,20 @@ class RepositoryManager:
                 for name, config in sorted(configs.items())
             }
             print(json.dumps(payload, indent=2))
-            return
+            return all((self.data_dir / name).exists() for name in configs)
 
         if not configs:
             console.print("[yellow]No repositories found[/yellow]")
-            return
+            return True
 
         rows = []
+        missing = []
         for name, config in sorted(configs.items()):
-            if config.last_updated:
-                age = datetime.now() - config.last_updated
+            if not (self.data_dir / name).exists():
+                missing.append(name)
+                age_str = "MISSING (dkb update)"
+            elif config.last_updated:
+                age = datetime.now(timezone.utc) - config.last_updated
                 hours = age.total_seconds() / 3600
 
                 if hours < 1:
@@ -315,7 +326,7 @@ class RepositoryManager:
                         [*(row[i].ljust(widths[i]) for i in range(5)), row[5]]
                     ).rstrip()
                 )
-            return
+            return not missing
 
         console.print()
         table = Table(
@@ -333,8 +344,9 @@ class RepositoryManager:
             table.add_row(name, version, docs, source, age_str)
 
         console.print(table)
+        return not missing
 
-    def _get_remote_commit(self, url: str, branch: str) -> Optional[str]:
+    def _get_remote_commit(self, url: str, branch: str) -> str | None:
         """Get the latest commit hash from remote without cloning."""
         try:
             result = subprocess.run(
@@ -354,7 +366,7 @@ class RepositoryManager:
     def _clone_repository(
         self,
         config: RepositoryConfig,
-        branch: Optional[str] = None,
+        branch: str | None = None,
     ):
         """Clone a repository and copy contents to data dir."""
         repo_dir = self.data_dir / config.name
@@ -446,5 +458,13 @@ class RepositoryManager:
                     else:
                         shutil.copy2(src, repo_dir / src.name)
 
-            config.last_updated = datetime.now()
+            config.last_updated = datetime.now(timezone.utc)
             config.last_commit = commit
+
+
+def _delete(path: Path):
+    """Remove a cache entry: a symlink is unlinked, a tree is removed."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)

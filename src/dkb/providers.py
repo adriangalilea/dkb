@@ -5,7 +5,7 @@ import subprocess
 import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from dkb import VERSION
 
@@ -16,11 +16,11 @@ class RepositoryProvider(ABC):
     """Abstract base for repository providers."""
 
     @abstractmethod
-    def parse_url(self, url: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    def parse_url(self, url: str) -> tuple[str, str, str | None] | None:
         """Parse URL and return (owner, repo, path) or None if invalid."""
 
     @abstractmethod
-    def fetch_metadata(self, url: str, owner: str, repo: str) -> Dict[str, Any]:
+    def fetch_metadata(self, url: str, owner: str, repo: str) -> dict[str, Any]:
         """Fetch repository metadata."""
 
     @abstractmethod
@@ -47,7 +47,7 @@ class GitHubProvider(RepositoryProvider):
 
         return False
 
-    def parse_url(self, url: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    def parse_url(self, url: str) -> tuple[str, str, str | None] | None:
         parsed = urllib.parse.urlparse(url)
 
         # Handle shorthand notation like "owner/repo/path"
@@ -64,8 +64,7 @@ class GitHubProvider(RepositoryProvider):
 
         path = parsed.path.strip("/")
 
-        if path.endswith(".git"):
-            path = path[:-4]
+        path = path.removesuffix(".git")
 
         parts = path.split("/")
         if len(parts) >= 2:
@@ -102,11 +101,11 @@ class GitHubProvider(RepositoryProvider):
         owner, repo, _ = parsed
         return f"https://github.com/{owner}/{repo}.git"
 
-    def fetch_metadata(self, url: str, owner: str, repo: str) -> Dict[str, Any]:
+    def fetch_metadata(self, url: str, owner: str, repo: str) -> dict[str, Any]:
         if self._has_gh_cli():
             try:
                 return self._fetch_with_gh(owner, repo)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - any gh failure falls through to the REST API
                 pass
 
         return self._fetch_with_api(owner, repo)
@@ -118,7 +117,7 @@ class GitHubProvider(RepositoryProvider):
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
 
-    def _fetch_with_gh(self, owner: str, repo: str) -> Dict[str, Any]:
+    def _fetch_with_gh(self, owner: str, repo: str) -> dict[str, Any]:
         repo_data = subprocess.check_output(
             ["gh", "api", f"repos/{owner}/{repo}"], text=True
         )
@@ -145,7 +144,7 @@ class GitHubProvider(RepositoryProvider):
 
         return metadata
 
-    def _fetch_with_api(self, owner: str, repo: str) -> Dict[str, Any]:
+    def _fetch_with_api(self, owner: str, repo: str) -> dict[str, Any]:
         metadata = {
             "description": "No description available",
             "default_branch": "main",
@@ -178,25 +177,27 @@ class GiteaProvider(RepositoryProvider):
     plain git host regardless.
     """
 
-    RESERVED_ROUTES = {
-        "src",
-        "raw",
-        "commit",
-        "commits",
-        "releases",
-        "tags",
-        "branches",
-        "issues",
-        "pulls",
-        "wiki",
-        "actions",
-        "activity",
-        "compare",
-        "settings",
-        "projects",
-        "packages",
-        "forks",
-    }
+    RESERVED_ROUTES = frozenset(
+        {
+            "src",
+            "raw",
+            "commit",
+            "commits",
+            "releases",
+            "tags",
+            "branches",
+            "issues",
+            "pulls",
+            "wiki",
+            "actions",
+            "activity",
+            "compare",
+            "settings",
+            "projects",
+            "packages",
+            "forks",
+        }
+    )
 
     def supports_url(self, url: str) -> bool:
         parsed = urllib.parse.urlparse(url)
@@ -207,15 +208,14 @@ class GiteaProvider(RepositoryProvider):
         parts = parsed.path.strip("/").split("/")
         return len(parts) >= 2 and all(parts[:2])
 
-    def parse_url(self, url: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    def parse_url(self, url: str) -> tuple[str, str, str | None] | None:
         if not self.supports_url(url):
             return None
 
         parsed = urllib.parse.urlparse(url)
         parts = parsed.path.strip("/").split("/")
         owner, repo = parts[0], parts[1]
-        if repo.endswith(".git"):
-            repo = repo[:-4]
+        repo = repo.removesuffix(".git")
 
         rest = parts[2:]
         if not rest:
@@ -245,7 +245,7 @@ class GiteaProvider(RepositoryProvider):
         host = urllib.parse.urlparse(url)
         return f"{host.scheme}://{host.netloc}/{owner}/{repo}.git"
 
-    def fetch_metadata(self, url: str, owner: str, repo: str) -> Dict[str, Any]:
+    def fetch_metadata(self, url: str, owner: str, repo: str) -> dict[str, Any]:
         host = urllib.parse.urlparse(url)
         api_base = f"{host.scheme}://{host.netloc}/api/v1/repos/{owner}/{repo}"
 
@@ -276,14 +276,14 @@ class GiteaProvider(RepositoryProvider):
         return metadata
 
 
-def _get_json(url: str) -> Optional[Any]:
+def _get_json(url: str) -> Any | None:
     req = urllib.request.Request(url)
     req.add_header("Accept", "application/json")
     req.add_header("User-Agent", f"dkb/{VERSION}")
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             return json.loads(response.read().decode())
-    except Exception:
+    except Exception:  # noqa: BLE001 - no JSON means no metadata; callers degrade
         return None
 
 
@@ -298,7 +298,7 @@ class ProviderRegistry:
             GiteaProvider(),
         ]
 
-    def get_provider(self, url: str) -> Optional[RepositoryProvider]:
+    def get_provider(self, url: str) -> RepositoryProvider | None:
         for provider in self.providers:
             if provider.supports_url(url):
                 return provider

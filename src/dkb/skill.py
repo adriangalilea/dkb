@@ -8,7 +8,6 @@ and carries versions, locations, and dkb usage.
 import html
 from collections import Counter
 from pathlib import Path
-from typing import Dict
 
 from dkb import console
 from dkb.models import RepositoryConfig
@@ -36,7 +35,7 @@ class SkillManager:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
 
-    def update(self, configs: Dict[str, RepositoryConfig]):
+    def update(self, configs: dict[str, RepositoryConfig]):
         """Regenerate the skill with the current catalogue."""
         description = self._description(sorted(configs))
 
@@ -48,10 +47,12 @@ class SkillManager:
             "",
             "# Developer Knowledge Base",
             "",
-            f"Every repo below is on disk at `{self.data_dir}/<name>`. "
-            "To use one, Read/Grep/Glob that path directly - do not run dkb "
-            "to find it, do not search the filesystem, do not answer from "
-            "memory.",
+            (
+                f"Every repo below is on disk at `{self.data_dir}/<name>`. "
+                "To use one, Read/Grep/Glob that path directly - do not run dkb "
+                "to find it, do not search the filesystem, do not answer from "
+                "memory."
+            ),
             "",
             "<repositories>",
         ]
@@ -77,9 +78,11 @@ class SkillManager:
                 READING_DOCS.format(data_dir=self.data_dir),
                 "## Managing the cache (dkb CLI)",
                 "",
-                "`dkb status [name...] --json` prints full configuration "
-                "(url, paths, version source, location) for scripting; "
-                "never read config.json by hand.",
+                (
+                    "`dkb status [name...] --json` prints full configuration "
+                    "(url, paths, version source, location) for scripting; "
+                    "never read config.json by hand."
+                ),
                 "",
                 "```",
                 self._get_help_text(),
