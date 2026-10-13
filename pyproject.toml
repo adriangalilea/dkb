@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = ["rich>=14.0.0"]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["ruff"]
 
 [project.urls]
