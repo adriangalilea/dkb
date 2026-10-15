@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from py_utils import SourcedError
+
 from dkb.config import STATE_FILE, ConfigManager, write_atomic
 from dkb.models import COMMIT, GitRepository, RepositoryConfig
 from dkb.providers import provider_registry
@@ -310,14 +312,25 @@ def _local_entry(
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
-    return subprocess.run(
+    """git's stdout. A failure is a SourcedError carrying git's own message
+    (`[git:fetch] fatal: couldn't find remote ref v9`), never its argv, so
+    every layer above can print it as it is."""
+    result = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         timeout=300,
-    ).stdout
+    )
+    if result.returncode != 0:
+        raise SourcedError(
+            source="git",
+            operation=args[0],
+            message=" ".join(result.stderr.split()) or f"exit {result.returncode}",
+            status=result.returncode,
+        )
+    return result.stdout
 
 
 def _missing_path(repo_path: Path, path: str) -> str:

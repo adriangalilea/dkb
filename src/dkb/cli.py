@@ -1,8 +1,9 @@
 """Command-line interface."""
 
 import argparse
-import subprocess
 import sys
+
+from py_utils import SourcedError
 
 from dkb import DESCRIPTION, NAME, VERSION, view
 from dkb.config import CONFIG_FILE, DATA_DIR
@@ -126,13 +127,15 @@ def main():
     except KeyboardInterrupt:
         view.message("interrupted")
         sys.exit(130)
-    except view.Shown:
-        sys.exit(1)
-    except (ValueError, RuntimeError, subprocess.CalledProcessError) as e:
-        # Expected failures (bad input, git errors) get one line; anything
-        # else is a dkb bug and keeps its traceback
+    except EXPECTED as e:
+        # Bad input, a forge or git refusing: one line. Anything else is a
+        # dkb bug and keeps its traceback
         view.error(e)
         sys.exit(1)
+
+
+# Failures a person causes or the world refuses, as opposed to dkb bugs
+EXPECTED = (ValueError, RuntimeError, SourcedError)
 
 
 def run(args: argparse.Namespace, manager: RepositoryManager) -> int:
@@ -141,9 +144,12 @@ def run(args: argparse.Namespace, manager: RepositoryManager) -> int:
         declared = manager.declare(
             args.source, args.branch, args.pin, args.version_url, args.name
         )
-        with view.adding(declared.name) as added:
-            config = manager.add(declared)
-            added(config, manager.data_dir / config.name)
+        try:
+            with view.adding(declared.name) as added:
+                config = manager.add(declared)
+                added(config, manager.data_dir / config.name)
+        except EXPECTED:
+            return 1  # the spinner's ⨯ line already said why
         return 0
 
     if args.command == "remove":

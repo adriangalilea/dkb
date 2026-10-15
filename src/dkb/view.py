@@ -8,7 +8,6 @@ stderr, so `dkb status | grep zod` never meets a spinner.
 """
 
 import json
-import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -20,45 +19,26 @@ from py_utils.cli import live, spin, spinner, table, ui
 from dkb.models import RepositoryConfig
 
 
-class Shown(Exception):
-    """A failure the view already put on screen (a spinner's ⨯ line): the CLI
-    exits 1 without printing it again."""
-
-
 def message(text: str):
     print(text, file=sys.stderr)
 
 
 def error(e: Exception):
-    message(f"{ui.bad('Error:')} {explain(e)}")
-
-
-def explain(e: Exception) -> str:
-    """One line a person can act on: git's own message, not its argv."""
-    if isinstance(e, subprocess.CalledProcessError) and e.stderr:
-        return " ".join(e.stderr.split())
-    return str(e)
+    message(f"{ui.bad('Error:')} {e}")
 
 
 @contextmanager
 def adding(name: str) -> Iterator[Callable[[RepositoryConfig, Path], None]]:
     """A spinner while an entry is fetched; the caller reports the result,
     which becomes the persisted line: `✓ zod 4.6.7 → ~/.local/share/dkb/zod`.
-    A failure persists as the spinner's ⨯ line, git's message included."""
+    A failure persists as the spinner's ⨯ line and propagates."""
+    with spinner(f"fetching {ui.accent(name)}") as set_label:
 
-    def added(config: RepositoryConfig, location: Path):
-        version = f" {config.effective_version}" if config.effective_version else ""
-        set_label(f"{ui.accent(config.name)}{version} → {location}")
+        def added(config: RepositoryConfig, location: Path):
+            version = f" {config.effective_version}" if config.effective_version else ""
+            set_label(f"{ui.accent(config.name)}{version} → {location}")
 
-    try:
-        with spinner(f"fetching {ui.accent(name)}") as set_label:
-            try:
-                yield added
-            except subprocess.CalledProcessError as e:
-                # The spinner prints str(e): give it git's message, not argv
-                raise RuntimeError(explain(e)) from e
-    except (ValueError, RuntimeError) as e:
-        raise Shown() from e
+        yield added
 
 
 def removed(name: str):
@@ -81,11 +61,11 @@ def updating(names: list[str]) -> Iterator[Callable[[str, str, str | Exception],
     """A live table, one row per repo, that worker threads move through
     waiting → syncing → updated / unchanged / failed. A pipe gets the final
     table once. Yields `report(name, state, detail)`; a failed repo's
-    detail is its exception, shown as git's own message."""
+    detail is its exception."""
     rows: dict[str, tuple[str, str]] = {name: ("waiting", "") for name in names}
 
     def report(name: str, state: str, detail: str | Exception):
-        text = ui.bad(explain(detail)) if isinstance(detail, Exception) else detail
+        text = ui.bad(str(detail)) if isinstance(detail, Exception) else detail
         rows[name] = (state, text)
 
     def frame() -> str:
