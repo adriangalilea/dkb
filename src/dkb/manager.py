@@ -16,7 +16,7 @@ from rich.table import Table
 
 from dkb import console
 from dkb.config import STATE_FILE, ConfigManager
-from dkb.models import GitRepository, RepositoryConfig
+from dkb.models import COMMIT, GitRepository, RepositoryConfig
 from dkb.providers import provider_registry
 from dkb.skill import SkillManager
 
@@ -35,53 +35,71 @@ class RepositoryManager:
 
     def add(
         self,
-        url: str,
+        source: str,
         branch: str | None = None,
+        pin: str | None = None,
         version_url: str | None = None,
         name: str | None = None,
     ):
-        """Add a new repository."""
-        _, _, repo, path = provider_registry.resolve(url)
-        repository = GitRepository.parse(url)
-
-        version_source = None
-        if version_url:
-            version_source = GitRepository.parse(version_url)
-            # The docs repo already carries its own releases
-            if version_source.url == repository.url:
-                version_source = None
-
-        # Explicit name wins, then the version source repo, then the docs repo
-        name = name or (version_source.repo if version_source else repo)
+        """Add a catalogue entry: a remote repo (following or pinned) or a
+        local directory, then materialize it."""
+        if source.startswith(("/", "~", ".")):
+            declared = _local_entry(source, name, branch, pin, version_url)
+        else:
+            declared = _remote_entry(source, name, branch, pin, version_url)
 
         configs = self.config_manager.load()
-        if name in configs:
+        if declared.name in configs:
             raise ValueError(
-                f"'{name}' is already cached ({configs[name].repository.url}); "
-                "pick another with --name, or `dkb remove` it first"
+                f"'{declared.name}' is already cached "
+                f"({configs[declared.name].source}); pick another with --name, "
+                "or `dkb remove` it first"
             )
 
-        declared = RepositoryConfig(
-            name=name,
-            repository=repository,
-            paths=(path,) if path else (),
-            branch=branch,
-            version_source=version_source,
-        )
-
-        with console.status(f"Fetching [cyan]{name}[/cyan]..."):
-            refreshed = declared.refreshed()
-            config = refreshed.cloned(
-                self._clone_repository(refreshed), datetime.now(UTC)
-            )
+        with console.status(f"Fetching [cyan]{declared.name}[/cyan]..."):
+            _, config = self._sync(declared)
 
         self.config_manager.add(config)
         self.skill_manager.update(self.config_manager.load())
 
         console.print(
-            f"[green]✓[/green] [cyan]{name}[/cyan] "
-            f"{config.effective_version or ''} → {self.data_dir / name}"
+            f"[green]✓[/green] [cyan]{config.name}[/cyan] "
+            f"{config.effective_version or ''} → {self.data_dir / config.name}"
         )
+
+    def _sync(self, config: RepositoryConfig) -> tuple[str, RepositoryConfig]:
+        """Bring one entry's cache in line with its declaration: 'updated' or
+        'unchanged', plus its new config. Raises on failure, leaving the old
+        cache entry as it was. Metadata refreshes on every call, since a
+        release can land without the docs changing."""
+        now = datetime.now(UTC)
+        target = self.data_dir / config.name
+
+        if config.local:
+            path = config.local_path
+            if not path.is_dir():
+                raise ValueError(f"{config.local} is not a directory on this machine")
+            refreshed = config.refreshed()
+            linked = target.is_symlink() and target.resolve() == path.resolve()
+            if linked and refreshed.is_current(None):
+                return "unchanged", refreshed.checked(now)
+            _delete(target)
+            target.symlink_to(path)
+            return "updated", refreshed.cloned(None, now)
+
+        # A pin never moves: nothing to ask upstream once it is on disk
+        if config.pin and target.exists() and config.is_current(None):
+            return "unchanged", config.checked(now)
+
+        remote_commit = (
+            None
+            if config.pin
+            else self._get_remote_commit(config.repository.url, config.branch)
+        )
+        refreshed = config.refreshed()
+        if target.exists() and refreshed.is_current(remote_commit):
+            return "unchanged", refreshed.checked(now)
+        return "updated", refreshed.cloned(self._clone_repository(refreshed), now)
 
     def remove(self, names: list[str]):
         """Remove repositories."""
@@ -104,35 +122,18 @@ class RepositoryManager:
         pad: int,
     ) -> RepositoryConfig | None:
         """Worker for parallel update: the repo's new config, or None when it
-        failed (its old config and clone stay as they were). Metadata
-        refreshes on every run, since a release can land without the docs
-        changing; the clone is redone only when upstream or the declaration
-        moved, or the clone is gone."""
+        failed (its old config and cache entry stay as they were)."""
         padded = name.ljust(pad)
         try:
-            progress.update(task_id, description=f"[cyan]{padded}[/cyan] checking...")
-            remote_commit = self._get_remote_commit(
-                config.repository.url, config.branch
+            progress.update(task_id, description=f"[cyan]{padded}[/cyan] syncing...")
+            outcome, synced = self._sync(config)
+            line = (
+                f"[green]✓ {padded} updated[/green]"
+                if outcome == "updated"
+                else f"[dim]- {padded} unchanged[/dim]"
             )
-            refreshed = config.refreshed()
-            now = datetime.now(UTC)
-
-            if (self.data_dir / name).exists() and refreshed.is_current(remote_commit):
-                progress.update(
-                    task_id,
-                    description=f"[dim]- {padded} unchanged[/dim]",
-                    completed=1,
-                )
-                return refreshed.checked(now)
-
-            progress.update(task_id, description=f"[cyan]{padded}[/cyan] cloning...")
-            commit = self._clone_repository(refreshed)
-            progress.update(
-                task_id,
-                description=f"[green]✓ {padded} updated[/green]",
-                completed=1,
-            )
-            return refreshed.cloned(commit, now)
+            progress.update(task_id, description=line, completed=1)
+            return synced
         except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
             progress.update(
                 task_id,
@@ -247,11 +248,13 @@ class RepositoryManager:
                     name,
                     config.effective_version or "-",
                     str(self.data_dir / name),
-                    config.repository.display_name,
+                    config.source,
                     config.version_source.display_name
                     if config.version_source
                     else "-",
-                    _age(config.last_updated) if present else "MISSING",
+                    ("live" if config.local else _age(config.last_updated))
+                    if present
+                    else "MISSING",
                     _age(config.last_checked) if present else "run dkb update",
                 )
             )
@@ -294,31 +297,46 @@ class RepositoryManager:
     def _clone_repository(self, config: RepositoryConfig) -> str:
         """Fetch the declared content into a staging dir beside the cache
         entry, then swap it in; returns the commit it was made from. The
-        old clone survives any failure."""
-        # No declared branch: git clones the remote's default
-        branch_args = ["--branch", config.branch] if config.branch else []
+        old clone survives any failure.
+
+        One shape for every remote kind: fetch exactly one ref (a pinned tag
+        or commit, the followed branch, or the remote's HEAD), shallow and
+        blobless, then check out only the declared paths."""
         target = self.data_dir / config.name
         staging = self.data_dir / f"{config.name}{STAGING_SUFFIX}"
         _delete(staging)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir) / "repo"
-            sparse_args = ["--sparse", "--no-checkout"] if config.paths else []
+            _git("init", "--quiet", str(repo_path))
+            _git("remote", "add", "origin", config.repository.url, cwd=repo_path)
             _git(
-                "clone",
+                "fetch",
+                "--quiet",
                 "--depth=1",
                 "--filter=blob:none",
-                "--quiet",
-                *sparse_args,
-                *branch_args,
-                config.repository.url,
-                str(repo_path),
+                "origin",
+                config.ref,
+                cwd=repo_path,
             )
             if config.paths:
                 _git("sparse-checkout", "set", *config.paths, cwd=repo_path)
-                _git("checkout", "--quiet", cwd=repo_path)
+            _git(
+                "-c",
+                "advice.detachedHead=false",
+                "switch",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+                cwd=repo_path,
+            )
 
             commit = _git("rev-parse", "HEAD", cwd=repo_path).strip()
+            assert (
+                config.pin is None
+                or not COMMIT.fullmatch(config.pin)
+                or (commit == config.pin)
+            ), f"pinned {config.pin}, fetched {commit}"
 
             # A declared path's contents land at the top level; a whole repo
             # is one implicit path, minus .git
@@ -350,6 +368,55 @@ class RepositoryManager:
         staging.rename(target)
         assert target.is_dir() and not staging.exists()
         return commit
+
+
+def _remote_entry(
+    url: str,
+    name: str | None,
+    branch: str | None,
+    pin: str | None,
+    version_url: str | None,
+) -> RepositoryConfig:
+    _, _, repo, path = provider_registry.resolve(url)
+    repository = GitRepository.parse(url)
+
+    version_source = None
+    if version_url:
+        version_source = GitRepository.parse(version_url)
+        # The docs repo already carries its own releases
+        if version_source.url == repository.url:
+            version_source = None
+
+    return RepositoryConfig(
+        # Explicit name wins, then the version source repo, then the docs repo
+        name=name or (version_source.repo if version_source else repo),
+        repository=repository,
+        paths=(path,) if path else (),
+        branch=branch,
+        pin=pin,
+        version_source=version_source,
+    )
+
+
+def _local_entry(
+    source: str,
+    name: str | None,
+    branch: str | None,
+    pin: str | None,
+    version_url: str | None,
+) -> RepositoryConfig:
+    if branch or pin or version_url:
+        raise ValueError(
+            "a local entry is your working copy as it is: "
+            "--branch, --pin and --version-url do not apply"
+        )
+    path = Path(source).expanduser().resolve()
+    if not path.is_dir():
+        raise ValueError(f"{source} is not a directory")
+    # Stored relative to home, so the catalogue reads the same on every machine
+    home = Path.home()
+    local = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+    return RepositoryConfig(name=name or path.name, local=local)
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:

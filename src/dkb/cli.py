@@ -17,7 +17,9 @@ ADD_EXAMPLES = """examples:
   dkb add https://github.com/astral-sh/uv/tree/main/docs
   dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
                                                     docs repo + version from the library
-  dkb add https://codeberg.org/owner/repo/src/branch/main/docs"""
+  dkb add https://codeberg.org/owner/repo/src/branch/main/docs
+  dkb add colinhacks/zod --pin v3.24.0 --name zod-3   the docs of the version you use
+  dkb add ~/Developer/my-lib                        your working copy, always current"""
 
 
 def build_parser(width: int | None = None) -> argparse.ArgumentParser:
@@ -46,17 +48,27 @@ files:
 
     add_parser = subparsers.add_parser(
         "add",
-        help="Cache a docs repo (or a folder of one)",
-        description="Cache a docs repo, or only a folder of it, and list it in the skill.",
+        help="Cache docs: a repo, a folder of one, a pinned version, or a local dir",
+        description=(
+            "Cache docs and list them in the skill. A remote entry follows a "
+            "branch (re-fetched when it moves) or is pinned to a tag or commit "
+            "(never re-fetched); a local entry links your working copy."
+        ),
         epilog=ADD_EXAMPLES,
         formatter_class=formatter,
     )
     add_parser.add_argument(
-        "url",
-        help="owner/repo[/path], or a GitHub / Gitea / Forgejo URL",
+        "source",
+        help="owner/repo[/path], a GitHub / Gitea / Forgejo URL, or a local directory (/, ~, .)",
     )
-    add_parser.add_argument(
-        "-b", "--branch", help="Branch to fetch (default: the remote's default branch)"
+    ref = add_parser.add_mutually_exclusive_group()
+    ref.add_argument(
+        "-b", "--branch", help="Branch to follow (default: the remote's default branch)"
+    )
+    ref.add_argument(
+        "--pin",
+        metavar="REF",
+        help="Tag or full commit to freeze at; the version shown is the pin",
     )
     add_parser.add_argument(
         "--version-url",
@@ -113,7 +125,7 @@ def main():
 
     try:
         if args.command == "add":
-            manager.add(args.url, args.branch, args.version_url, args.name)
+            manager.add(args.source, args.branch, args.pin, args.version_url, args.name)
         elif args.command == "remove":
             manager.remove(args.names)
         elif args.command == "update":

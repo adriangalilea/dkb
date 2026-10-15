@@ -16,6 +16,10 @@ from dkb.models import RepositoryConfig
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 SKILL_FILE = CLAUDE_DIR / "skills" / "dkb" / "SKILL.md"
+# Agent Skills spec cap on `description` (agentskills.io/specification).
+# Claude Code also drops whole descriptions of rarely used skills when the
+# listing outgrows its budget, so the description stays an index and the
+# body, loaded in full on invocation, carries the detail.
 MAX_DESCRIPTION_LENGTH = 1024
 
 MAX_STRUCTURE_ENTRIES = 15
@@ -66,8 +70,9 @@ class SkillManager:
                 [
                     "<item>",
                     f"  <name>{html.escape(name)}</name>",
-                    f"  <description>{html.escape(config.repository.description or '-')}</description>",
+                    f"  <description>{html.escape(config.description or '-')}</description>",
                     f"  <version>{html.escape(config.effective_version or '-')}</version>",
+                    f"  <source>{html.escape(config.source)}</source>",
                     f"  <location>{html.escape(str(self.data_dir / name))}</location>",
                     f"  <structure>{html.escape(self._structure(name))}</structure>",
                     "</item>",
@@ -105,7 +110,8 @@ class SkillManager:
         while True:
             listing = ", ".join(shown)
             if dropped:
-                listing = f"{listing} +{dropped} more" if shown else f"{dropped} repos"
+                rest = f"{dropped} more, all listed in the skill"
+                listing = f"{listing} +{rest}" if shown else rest
             description = (
                 "The `dkb` CLI and its local docs cache. Trigger on ANY "
                 "mention of dkb (add/remove/update a repo, 'add X to dkb', "
@@ -120,13 +126,15 @@ class SkillManager:
 
     def _structure(self, name: str) -> str:
         """Top-level entries of a cached repo, dirs first; file swarms
-        collapse to counts by extension."""
+        collapse to counts by extension. Dot entries (.git, .build, .github)
+        are tooling, not docs, and a local checkout is full of them."""
         repo_dir = self.data_dir / name
         if not repo_dir.exists():
             return "-"
 
-        dirs = sorted(p.name + "/" for p in repo_dir.iterdir() if p.is_dir())
-        files = sorted(p.name for p in repo_dir.iterdir() if not p.is_dir())
+        entries = [p for p in repo_dir.iterdir() if not p.name.startswith(".")]
+        dirs = sorted(p.name + "/" for p in entries if p.is_dir())
+        files = sorted(p.name for p in entries if not p.is_dir())
 
         if len(dirs) + len(files) <= MAX_STRUCTURE_ENTRIES:
             return ", ".join(dirs + files) or "-"
