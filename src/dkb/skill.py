@@ -107,10 +107,11 @@ class SkillManager:
             if dropped:
                 listing = f"{listing} +{dropped} more" if shown else f"{dropped} repos"
             description = (
-                f"Locally cached, versioned documentation at "
-                f"{self.data_dir}/<name> for: {listing}. "
-                "Read these docs from disk instead of guessing APIs. "
-                "Also manages the cache (dkb add/remove/update)."
+                "The `dkb` CLI and its local docs cache. Trigger on ANY "
+                "mention of dkb (add/remove/update a repo, 'add X to dkb', "
+                "a dkb error) and before answering API questions about any "
+                f"cached repo: {listing}. Docs live at {self.data_dir}/<name>, "
+                "read them from disk instead of guessing APIs."
             )
             if len(description) <= MAX_DESCRIPTION_LENGTH or not shown:
                 return description
