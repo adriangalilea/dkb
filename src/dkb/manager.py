@@ -47,15 +47,17 @@ class RepositoryManager:
         _owner, repo, extracted_path = parsed
         paths = [extracted_path] if extracted_path else []
 
+        # The docs repo already carries its own releases: no separate source
+        if version_url and _repo_url(version_url) == _repo_url(url):
+            version_url = None
+
         # Explicit name wins, then the version source repo, then the docs repo
         if not name:
             name = repo
-            if version_url and version_url != url:
-                version_provider = provider_registry.get_provider(version_url)
-                if version_provider:
-                    version_parsed = version_provider.parse_url(version_url)
-                    if version_parsed:
-                        _, name, _ = version_parsed
+            if version_url:
+                _, name, _ = provider_registry.get_provider(version_url).parse_url(
+                    version_url
+                )
 
         # Check existence BEFORE fetching metadata
         existing_configs = self.config_manager.load()
@@ -76,7 +78,7 @@ class RepositoryManager:
             repository = GitRepository.from_url(url)
 
             version_source = None
-            if version_url and version_url != url:
+            if version_url:
                 progress.update(task, description="Fetching version source metadata...")
                 version_source = GitRepository.from_url(version_url)
 
@@ -460,6 +462,15 @@ class RepositoryManager:
 
             config.last_updated = datetime.now(UTC)
             config.last_commit = commit
+
+
+def _repo_url(url: str) -> str:
+    """Canonical clone URL: the identity of a repo, whatever path or
+    shorthand the user typed."""
+    provider = provider_registry.get_provider(url)
+    if not provider:
+        raise ValueError(f"Unsupported repository URL: {url}")
+    return provider.normalize_url(url)
 
 
 def _delete(path: Path):
