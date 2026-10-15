@@ -33,6 +33,7 @@ Each `<location>` is a plain directory on disk; read it with your file tools dir
 - Grep the location for API names, options, or error messages to land on the exact page
 - Glob `**/*.md*` (formats vary per repo: .md, .mdx, .rst) to enumerate pages when grep is too narrow
 - Read files directly once located; these are the exact docs for the cached version, prefer them over memory or web fetches
+- A local entry (`<source>` starting with `~` or `/`) is a symlink to a working copy: search its own `<location>`, since a search from `{data_dir}` does not follow symlinks
 """
 
 

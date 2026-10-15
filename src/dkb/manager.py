@@ -15,7 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from dkb import console
-from dkb.config import STATE_FILE, ConfigManager
+from dkb.config import STATE_FILE, ConfigManager, write_atomic
 from dkb.models import COMMIT, GitRepository, RepositoryConfig
 from dkb.providers import provider_registry
 from dkb.skill import SkillManager
@@ -23,6 +23,14 @@ from dkb.skill import SkillManager
 # Clones are assembled here, inside the data dir, then renamed into place:
 # a failed fetch never leaves a repo half-copied or deleted
 STAGING_SUFFIX = ".partial"
+
+# ripgrep, and so Claude Code's Grep and Glob, honours every .gitignore
+# above a path: a dotfiles repo at ~ that ignores "*" hides the whole cache
+# and every search silently finds nothing. An .ignore file outranks
+# .gitignore, so the cache re-includes itself, minus dkb's bookkeeping. A
+# local entry's own .gitignore is deeper and still applies (.build stays out).
+SEARCH_IGNORE = f"!*\n{STATE_FILE.name}\n*{STAGING_SUFFIX}\n"
+IGNORE_FILE = ".ignore"
 
 
 class RepositoryManager:
@@ -32,6 +40,12 @@ class RepositoryManager:
         self.data_dir = data_dir
         self.config_manager = ConfigManager()
         self.skill_manager = SkillManager(data_dir)
+
+    def _prepare_data_dir(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        ignore = self.data_dir / IGNORE_FILE
+        if not ignore.exists() or ignore.read_text() != SEARCH_IGNORE:
+            write_atomic(ignore, SEARCH_IGNORE)
 
     def add(
         self,
@@ -56,6 +70,7 @@ class RepositoryManager:
                 "or `dkb remove` it first"
             )
 
+        self._prepare_data_dir()
         with console.status(f"Fetching [cyan]{declared.name}[/cyan]..."):
             _, config = self._sync(declared)
 
@@ -147,15 +162,16 @@ class RepositoryManager:
         missing or changed upstream, prune clones nobody declares, and
         regenerate the skill. Idempotent; a fresh machine runs it once."""
         configs = self.config_manager.load()
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._prepare_data_dir()
 
         if names:
             _require_known(names, configs)
             configs_to_update = {name: configs[name] for name in names}
         else:
             configs_to_update = configs
+            own = {STATE_FILE.name, IGNORE_FILE}
             for entry in self.data_dir.iterdir():
-                if entry == STATE_FILE or entry.name in configs:
+                if entry.name in own or entry.name in configs:
                     continue
                 _delete(entry)
                 console.print(f"[red]✗[/red] {entry.name} pruned (not in catalogue)")
