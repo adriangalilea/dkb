@@ -1,20 +1,20 @@
-"""Repository data models."""
+"""Repository data models. Immutable: every step returns a new value."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
 from dkb.providers import RepositoryProvider, provider_registry
 
 
-@dataclass
+@dataclass(frozen=True)
 class GitRepository:
     """A repository on a forge: canonical clone URL plus fetched metadata."""
 
     url: str
     owner: str
     repo: str
-    provider: RepositoryProvider = field(repr=False)
+    provider: RepositoryProvider = field(repr=False, compare=False)
     description: str | None = None
     latest_version: str | None = None
 
@@ -36,11 +36,14 @@ class GitRepository:
             latest_version=latest_version,
         )
 
-    def refresh(self):
-        """Re-read description and latest release from the forge."""
+    def refreshed(self) -> "GitRepository":
+        """Description and latest release as the forge reports them now."""
         metadata = self.provider.fetch_metadata(self.url, self.owner, self.repo)
-        self.description = metadata["description"]
-        self.latest_version = metadata["latest_version"]
+        return replace(
+            self,
+            description=metadata["description"],
+            latest_version=metadata["latest_version"],
+        )
 
     @property
     def display_name(self) -> str:
@@ -53,20 +56,22 @@ DECLARATION_KEYS = {"url", "paths", "branch", "version_url"}
 CONTENT_KEYS = ("url", "paths", "branch")
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepositoryConfig:
-    """Configuration for a repository in dkb."""
+    """One catalogue entry plus what the cache knows about it."""
 
     name: str
     repository: GitRepository
-    paths: list[str] = field(default_factory=list)
+    paths: tuple[str, ...] = ()
     branch: str | None = None
     version_source: GitRepository | None = None
 
-    # What the clone on disk was made from
+    # When the docs on disk last changed, and what they were made from
     last_updated: datetime | None = None
     last_commit: str | None = None
     fetched: dict[str, Any] | None = None
+    # When upstream was last asked, changed or not
+    last_checked: datetime | None = None
 
     @property
     def effective_version(self) -> str | None:
@@ -83,9 +88,30 @@ class RepositoryConfig:
         catalogue edited elsewhere changes paths without moving the commit)."""
         return remote_commit == self.last_commit and self.fetched == self.content()
 
+    def refreshed(self) -> "RepositoryConfig":
+        return replace(
+            self,
+            repository=self.repository.refreshed(),
+            version_source=self.version_source and self.version_source.refreshed(),
+        )
+
+    def checked(self, now: datetime) -> "RepositoryConfig":
+        return replace(self, last_checked=now)
+
+    def cloned(self, commit: str, now: datetime) -> "RepositoryConfig":
+        result = replace(
+            self,
+            last_updated=now,
+            last_commit=commit,
+            fetched=self.content(),
+            last_checked=now,
+        )
+        assert result.is_current(commit)
+        return result
+
     def declaration(self) -> dict[str, Any]:
         """The catalogue entry: what to cache, nothing fetched."""
-        data: dict[str, Any] = {"url": self.repository.url, "paths": self.paths}
+        data: dict[str, Any] = {"url": self.repository.url, "paths": list(self.paths)}
         if self.branch:
             data["branch"] = self.branch
         if self.version_source:
@@ -101,6 +127,8 @@ class RepositoryConfig:
             data["version"] = self.effective_version
         if self.last_updated:
             data["last_updated"] = self.last_updated.isoformat()
+        if self.last_checked:
+            data["last_checked"] = self.last_checked.isoformat()
         if self.last_commit:
             data["commit"] = self.last_commit
         if self.fetched:
@@ -140,14 +168,15 @@ class RepositoryConfig:
         return cls(
             name=name,
             repository=repository,
-            paths=declared.get("paths", []),
+            paths=tuple(declared.get("paths", [])),
             branch=declared.get("branch"),
             version_source=version_source,
-            last_updated=(
-                datetime.fromisoformat(state["last_updated"])
-                if "last_updated" in state
-                else None
-            ),
+            last_updated=_when(state.get("last_updated")),
             last_commit=state.get("commit"),
             fetched=state.get("fetched"),
+            last_checked=_when(state.get("last_checked")),
         )
+
+
+def _when(stamp: str | None) -> datetime | None:
+    return datetime.fromisoformat(stamp) if stamp else None

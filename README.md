@@ -30,12 +30,12 @@ $ dkb add colinhacks/zod/packages/docs/content
 ✓ zod 4.6.7 → ~/.local/share/dkb/zod
 
 $ dkb                      # alone: the status
-┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┓
-┃ Name        ┃ Version ┃ Source                      ┃ Version from             ┃ Fetched ┃
-┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━┩
-│ tailwindcss │ 4.3.3   │ tailwindlabs/tailwindcss.com │ tailwindlabs/tailwindcss │ 2m ago  │
-│ zod         │ 4.6.7   │ colinhacks/zod              │ -                        │ 1m ago  │
-└─────────────┴─────────┴─────────────────────────────┴──────────────────────────┴─────────┘
+┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ Name        ┃ Version ┃ Source                       ┃ Version from             ┃ Docs changed ┃ Checked ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ tailwindcss │ 4.3.3   │ tailwindlabs/tailwindcss.com │ tailwindlabs/tailwindcss │ 35d ago      │ 2m ago  │
+│ zod         │ 4.6.7   │ colinhacks/zod               │ -                        │ 1d ago       │ 2m ago  │
+└─────────────┴─────────┴──────────────────────────────┴──────────────────────────┴──────────────┴─────────┘
 
 $ dkb update               # parallel, skips what did not move upstream
   - tailwindcss unchanged
@@ -57,7 +57,7 @@ Two files, two owners:
 | File | Holds | Changes on |
 |---|---|---|
 | `$XDG_CONFIG_HOME/dkb/config.json` (`~/.config/dkb/config.json`) | the catalogue: `url`, `paths`, `branch`, `version_url` per repo | `dkb add` / `dkb remove` |
-| `$XDG_DATA_HOME/dkb/` (`~/.local/share/dkb/`) | the clones, one directory per repo, plus `state.json` (description, version, commit, what the clone was made from) | `dkb update` |
+| `$XDG_DATA_HOME/dkb/` (`~/.local/share/dkb/`) | the clones, one directory per repo, plus `state.json` (description, version, commit, what the clone was made from, when docs last changed and when upstream was last checked) | `dkb update` |
 
 The catalogue is the declaration and is meant to be tracked in a dotfiles repo. `dkb update` reconciles the cache with it: clones anything declared that is missing, re-clones anything whose upstream commit or declared `paths`/`branch` changed, re-reads every version and description, prunes clones nobody declares, and regenerates the skill; it exits 1 if any repo failed. A failed fetch keeps the previous clone and version: new content is assembled beside the old and swapped in only when complete. Without a declared `branch`, a repo follows its remote's default branch, whatever it is called. Metadata comes from `gh` when it is logged in, else from GitHub's public API (60 requests/hour). A fresh machine is one `dkb update` away from the same knowledge base. `dkb status` exits 1 while a declared repo has no clone, so it doubles as a drift check.
 

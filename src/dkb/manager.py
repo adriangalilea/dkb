@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,19 +61,19 @@ class RepositoryManager:
                 "pick another with --name, or `dkb remove` it first"
             )
 
-        config = RepositoryConfig(
+        declared = RepositoryConfig(
             name=name,
             repository=repository,
-            paths=[path] if path else [],
+            paths=(path,) if path else (),
             branch=branch,
             version_source=version_source,
         )
 
         with console.status(f"Fetching [cyan]{name}[/cyan]..."):
-            repository.refresh()
-            if version_source:
-                version_source.refresh()
-            self._clone_repository(config)
+            refreshed = declared.refreshed()
+            config = refreshed.cloned(
+                self._clone_repository(refreshed), datetime.now(UTC)
+            )
 
         self.config_manager.add(config)
         self.skill_manager.update(self.config_manager.load())
@@ -103,47 +102,44 @@ class RepositoryManager:
         progress: Progress,
         task_id,
         pad: int,
-    ) -> str:
-        """Worker for parallel update: 'updated', 'unchanged' or 'failed'.
-        Metadata (version, description) refreshes on every run, since a
-        release can land without the docs changing; the clone is redone
-        only when upstream or the declaration moved, or the clone is gone."""
+    ) -> RepositoryConfig | None:
+        """Worker for parallel update: the repo's new config, or None when it
+        failed (its old config and clone stay as they were). Metadata
+        refreshes on every run, since a release can land without the docs
+        changing; the clone is redone only when upstream or the declaration
+        moved, or the clone is gone."""
         padded = name.ljust(pad)
         try:
             progress.update(task_id, description=f"[cyan]{padded}[/cyan] checking...")
             remote_commit = self._get_remote_commit(
                 config.repository.url, config.branch
             )
+            refreshed = config.refreshed()
+            now = datetime.now(UTC)
 
-            config.repository.refresh()
-            if config.version_source:
-                config.version_source.refresh()
-
-            present = (self.data_dir / name).exists()
-            if present and config.is_current(remote_commit):
+            if (self.data_dir / name).exists() and refreshed.is_current(remote_commit):
                 progress.update(
                     task_id,
                     description=f"[dim]- {padded} unchanged[/dim]",
                     completed=1,
                 )
-                return "unchanged"
+                return refreshed.checked(now)
 
             progress.update(task_id, description=f"[cyan]{padded}[/cyan] cloning...")
-            self._clone_repository(config)
-
+            commit = self._clone_repository(refreshed)
             progress.update(
                 task_id,
                 description=f"[green]✓ {padded} updated[/green]",
                 completed=1,
             )
-            return "updated"
+            return refreshed.cloned(commit, now)
         except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
             progress.update(
                 task_id,
                 description=f"[red]✗ {padded} {escape(explain(e))}[/red]",
                 completed=1,
             )
-            return "failed"
+            return None
 
     def update(self, names: list[str] | None = None):
         """Reconcile the cache with the catalogue: fetch declared repos that are
@@ -171,8 +167,6 @@ class RepositoryManager:
             return
 
         pad = max(len(n) for n in configs_to_update)
-        outcomes: dict[str, str] = {}
-        lock = threading.Lock()
 
         progress = Progress(
             SpinnerColumn(finished_text=" "),
@@ -188,22 +182,21 @@ class RepositoryManager:
                 for name in configs_to_update
             }
 
-            def worker(name: str, config: RepositoryConfig) -> None:
-                outcome = self._update_one(name, config, progress, tasks[name], pad)
-                with lock:
-                    outcomes[name] = outcome
-
             with ThreadPoolExecutor(max_workers=6) as pool:
-                for future in [
-                    pool.submit(worker, name, config)
+                futures = {
+                    name: pool.submit(
+                        self._update_one, name, config, progress, tasks[name], pad
+                    )
                     for name, config in configs_to_update.items()
-                ]:
-                    future.result()
+                }
+                results = {name: future.result() for name, future in futures.items()}
 
-        self.config_manager.save(configs)
-        self.skill_manager.update(configs)
+        # A failed repo keeps its previous config: its clone was not touched
+        merged = {name: results.get(name) or config for name, config in configs.items()}
+        self.config_manager.save(merged)
+        self.skill_manager.update(merged)
 
-        failed = sorted(n for n, o in outcomes.items() if o == "failed")
+        failed = sorted(name for name, result in results.items() if result is None)
         if failed:
             raise RuntimeError(f"failed to update: {', '.join(failed)}")
 
@@ -234,18 +227,21 @@ class RepositoryManager:
             )
             return True
 
-        header = ("NAME", "VERSION", "LOCATION", "SOURCE", "VERSION FROM", "FETCHED")
+        header = (
+            "NAME",
+            "VERSION",
+            "LOCATION",
+            "SOURCE",
+            "VERSION FROM",
+            "DOCS CHANGED",
+            "CHECKED",
+        )
         rows = []
         missing = []
         for name, config in sorted(configs.items()):
-            if not (self.data_dir / name).exists():
+            present = (self.data_dir / name).exists()
+            if not present:
                 missing.append(name)
-                age = "MISSING (run dkb update)"
-            elif config.last_updated:
-                age = _age(config.last_updated)
-            else:
-                age = "never"
-
             rows.append(
                 (
                     name,
@@ -255,20 +251,19 @@ class RepositoryManager:
                     config.version_source.display_name
                     if config.version_source
                     else "-",
-                    age,
+                    _age(config.last_updated) if present else "MISSING",
+                    _age(config.last_checked) if present else "run dkb update",
                 )
             )
 
         # Piped output (agents, scripts): one greppable line per repo,
         # location included, no box drawing to mangle
         if not sys.stdout.isatty():
-            widths = [max(len(row[i]) for row in [header, *rows]) for i in range(5)]
+            last = len(header) - 1
+            widths = [max(len(row[i]) for row in [header, *rows]) for i in range(last)]
             for row in [header, *rows]:
-                print(
-                    "  ".join(
-                        [*(row[i].ljust(widths[i]) for i in range(5)), row[5]]
-                    ).rstrip()
-                )
+                cells = [row[i].ljust(widths[i]) for i in range(last)]
+                print("  ".join([*cells, row[last]]).rstrip())
             return not missing
 
         table = Table(
@@ -278,10 +273,11 @@ class RepositoryManager:
         table.add_column("Version", style="green", overflow="fold")
         table.add_column("Source", style="blue", overflow="fold")
         table.add_column("Version from", style="dim", overflow="fold")
-        table.add_column("Fetched", style="yellow")
+        table.add_column("Docs changed", style="yellow")
+        table.add_column("Checked", style="dim")
 
-        for name, version, _, source, version_from, age in rows:
-            table.add_row(name, version, source, version_from, age)
+        for name, version, _, *rest in rows:
+            table.add_row(name, version, *rest)
 
         console.print(table)
         return not missing
@@ -295,9 +291,10 @@ class RepositoryManager:
             raise ValueError(f"{url} has no branch '{branch}'")
         return line.split()[0]
 
-    def _clone_repository(self, config: RepositoryConfig):
+    def _clone_repository(self, config: RepositoryConfig) -> str:
         """Fetch the declared content into a staging dir beside the cache
-        entry, then swap it in. The old clone survives any failure."""
+        entry, then swap it in; returns the commit it was made from. The
+        old clone survives any failure."""
         # No declared branch: git clones the remote's default
         branch_args = ["--branch", config.branch] if config.branch else []
         target = self.data_dir / config.name
@@ -351,10 +348,8 @@ class RepositoryManager:
 
         _delete(target)
         staging.rename(target)
-
-        config.last_updated = datetime.now(UTC)
-        config.last_commit = commit
-        config.fetched = config.content()
+        assert target.is_dir() and not staging.exists()
+        return commit
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -418,7 +413,9 @@ def _require_known(names: list[str], configs: dict[str, RepositoryConfig]):
     raise ValueError(f"not in the catalogue: {', '.join(hints)}; `dkb status` lists it")
 
 
-def _age(when: datetime) -> str:
+def _age(when: datetime | None) -> str:
+    if when is None:
+        return "never"
     seconds = (datetime.now(UTC) - when).total_seconds()
     if seconds < 3600:
         return f"{int(seconds / 60)}m ago"
