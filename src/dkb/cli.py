@@ -1,6 +1,7 @@
 """Command-line interface."""
 
 import argparse
+import subprocess
 import sys
 
 from dkb import DESCRIPTION, NAME, VERSION, console
@@ -100,7 +101,9 @@ def main():
     except KeyboardInterrupt:
         console.print("\n[dim]interrupted[/dim]")
         sys.exit(130)
-    except Exception as e:  # noqa: BLE001 - the CLI's single error face
+    except (ValueError, RuntimeError, subprocess.CalledProcessError) as e:
+        # Expected failures (bad input, git errors) get one line; anything
+        # else is a dkb bug and keeps its traceback
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
