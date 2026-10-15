@@ -94,7 +94,7 @@ Two files, two owners:
 | `$XDG_CONFIG_HOME/dkb/config.json` (`~/.config/dkb/config.json`) | the catalogue: `url`, `paths`, `branch`, `version_url` per repo | `dkb add` / `dkb remove` |
 | `$XDG_DATA_HOME/dkb/` (`~/.local/share/dkb/`) | the clones, one directory per repo, plus `state.json` (description, version, commit, last update) | `dkb update` |
 
-The catalogue is the declaration and is meant to be tracked in a dotfiles repo. `dkb update` reconciles the cache with it: clones anything declared that is missing, refreshes anything that changed upstream, prunes clones nobody declares, and regenerates the skill. A fresh machine is one `dkb update` away from the same knowledge base. `dkb status` exits 1 while a declared repo has no clone, so it doubles as a drift check.
+The catalogue is the declaration and is meant to be tracked in a dotfiles repo. `dkb update` reconciles the cache with it: clones anything declared that is missing, refreshes anything that changed upstream, re-reads every version and description, prunes clones nobody declares, and regenerates the skill; it exits 1 if any repo failed. Without a declared `branch`, a repo follows its remote's default branch, whatever it is called. A fresh machine is one `dkb update` away from the same knowledge base. `dkb status` exits 1 while a declared repo has no clone, so it doubles as a drift check.
 
 ```jsonc
 // ~/.config/dkb/config.json

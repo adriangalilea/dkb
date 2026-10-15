@@ -132,67 +132,48 @@ class RepositoryManager:
         progress: Progress,
         task_id,
         pad: int,
-    ) -> bool:
-        """Worker for parallel update. Returns True if content changed."""
+    ) -> str:
+        """Worker for parallel update: 'updated', 'unchanged' or 'failed'.
+        Metadata (version, description) refreshes on every run, since a
+        release can land without the docs changing; the clone is redone
+        only when the upstream commit moved or the clone is missing."""
         padded = name.ljust(pad)
         try:
-            branch_to_use = config.branch or config.repository.default_branch
-
             progress.update(task_id, description=f"[cyan]{padded}[/cyan] checking...")
             remote_commit = self._get_remote_commit(
-                config.repository.url, branch_to_use
+                config.repository.url, config.branch
             )
+
+            _refresh_metadata(config.repository)
+            if config.version_source:
+                _refresh_metadata(config.version_source)
+
             present = (self.data_dir / name).exists()
-            if present and remote_commit and remote_commit == config.last_commit:
+            if present and remote_commit == config.last_commit:
                 progress.update(
                     task_id,
                     description=f"[dim]- {padded} unchanged[/dim]",
                     completed=1,
                 )
-                return False
-
-            progress.update(
-                task_id, description=f"[cyan]{padded}[/cyan] fetching metadata..."
-            )
-            provider = provider_registry.get_provider(config.repository.url)
-            if provider:
-                metadata = provider.fetch_metadata(
-                    config.repository.url,
-                    config.repository.owner,
-                    config.repository.repo,
-                )
-                config.repository.latest_version = metadata.get("latest_version")
-                if config.branch is None:
-                    branch_to_use = metadata.get("default_branch", branch_to_use)
-
-            if config.version_source:
-                vs_provider = provider_registry.get_provider(config.version_source.url)
-                if vs_provider:
-                    vs_metadata = vs_provider.fetch_metadata(
-                        config.version_source.url,
-                        config.version_source.owner,
-                        config.version_source.repo,
-                    )
-                    config.version_source.latest_version = vs_metadata.get(
-                        "latest_version"
-                    )
+                return "unchanged"
 
             progress.update(task_id, description=f"[cyan]{padded}[/cyan] cloning...")
-            self._clone_repository(config, branch_to_use)
+            self._clone_repository(config)
 
             progress.update(
                 task_id,
                 description=f"[green]✓ {padded} updated[/green]",
                 completed=1,
             )
-            return True
+            return "updated"
         except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
+            detail = getattr(e, "stderr", None) or e
             progress.update(
                 task_id,
-                description=f"[red]✗ {padded} {e}[/red]",
+                description=f"[red]✗ {padded} {str(detail).strip()}[/red]",
                 completed=1,
             )
-            return False
+            return "failed"
 
     def update(self, names: list[str] | None = None):
         """Reconcile the cache with the catalogue: fetch declared repos that are
@@ -210,9 +191,10 @@ class RepositoryManager:
                 console.print(f"[red]✗[/red] {entry.name} pruned (not in catalogue)")
 
         if names:
-            configs_to_update = {
-                name: configs[name] for name in names if name in configs
-            }
+            unknown = [n for n in names if n not in configs]
+            if unknown:
+                raise ValueError(f"Not in the catalogue: {', '.join(unknown)}")
+            configs_to_update = {name: configs[name] for name in names}
         else:
             configs_to_update = configs
 
@@ -221,7 +203,7 @@ class RepositoryManager:
             return
 
         pad = max(len(n) for n in configs_to_update)
-        updated = []
+        outcomes: dict[str, str] = {}
         lock = threading.Lock()
 
         progress = Progress(
@@ -238,10 +220,9 @@ class RepositoryManager:
                 tasks[name] = tid
 
             def worker(name: str, config: RepositoryConfig) -> None:
-                changed = self._update_one(name, config, progress, tasks[name], pad)
-                if changed:
-                    with lock:
-                        updated.append(name)
+                outcome = self._update_one(name, config, progress, tasks[name], pad)
+                with lock:
+                    outcomes[name] = outcome
 
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = [
@@ -252,11 +233,15 @@ class RepositoryManager:
                     future.result()
 
         self.config_manager.save(configs)
+        updated = sorted(n for n, o in outcomes.items() if o == "updated")
+        failed = sorted(n for n, o in outcomes.items() if o == "failed")
         if updated:
             console.print(
                 f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]"
             )
         self.skill_manager.update(configs)
+        if failed:
+            raise RuntimeError(f"failed to update: {', '.join(failed)}")
 
     def status(self, names: list[str] | None = None, as_json: bool = False) -> bool:
         """Show status of repositories: table for humans, --json for tools.
@@ -348,31 +333,27 @@ class RepositoryManager:
         console.print(table)
         return not missing
 
-    def _get_remote_commit(self, url: str, branch: str) -> str | None:
-        """Get the latest commit hash from remote without cloning."""
-        try:
-            result = subprocess.run(
-                ["git", "ls-remote", url, f"refs/heads/{branch}"],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=15,
-            )
-            line = result.stdout.strip()
-            if line:
-                return line.split()[0]
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            pass
-        return None
+    def _get_remote_commit(self, url: str, branch: str | None) -> str:
+        """Tip of the declared branch, or of the remote's HEAD (its default
+        branch, whatever it is called) when none is declared."""
+        ref = f"refs/heads/{branch}" if branch else "HEAD"
+        result = subprocess.run(
+            ["git", "ls-remote", url, ref],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        line = result.stdout.strip()
+        if not line:
+            raise ValueError(f"{url} has no {ref}")
+        return line.split()[0]
 
-    def _clone_repository(
-        self,
-        config: RepositoryConfig,
-        branch: str | None = None,
-    ):
+    def _clone_repository(self, config: RepositoryConfig):
         """Clone a repository and copy contents to data dir."""
         repo_dir = self.data_dir / config.name
-        branch_to_use = branch or config.branch or config.repository.default_branch
+        # No declared branch: git clones the remote's default
+        branch_args = ["--branch", config.branch] if config.branch else []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir) / "repo"
@@ -387,8 +368,7 @@ class RepositoryManager:
                         "--filter=blob:none",
                         "--sparse",
                         "--no-checkout",
-                        "--branch",
-                        branch_to_use,
+                        *branch_args,
                         "--quiet",
                         config.repository.url,
                         str(repo_path),
@@ -416,8 +396,7 @@ class RepositoryManager:
                         "clone",
                         "--depth=1",
                         "--filter=blob:none",
-                        "--branch",
-                        branch_to_use,
+                        *branch_args,
                         "--quiet",
                         config.repository.url,
                         str(repo_path),
@@ -471,6 +450,16 @@ def _repo_url(url: str) -> str:
     if not provider:
         raise ValueError(f"Unsupported repository URL: {url}")
     return provider.normalize_url(url)
+
+
+def _refresh_metadata(repository: GitRepository):
+    """Re-read description and latest release from the forge."""
+    provider = provider_registry.get_provider(repository.url)
+    metadata = provider.fetch_metadata(
+        repository.url, repository.owner, repository.repo
+    )
+    repository.description = metadata["description"]
+    repository.latest_version = metadata["latest_version"]
 
 
 def _delete(path: Path):

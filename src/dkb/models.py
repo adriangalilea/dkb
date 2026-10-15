@@ -16,7 +16,6 @@ class GitRepository:
     owner: str
     repo: str
     description: str | None = None
-    default_branch: str = "main"
     latest_version: str | None = None
 
     @classmethod
@@ -42,7 +41,6 @@ class GitRepository:
             owner=owner,
             repo=repo,
             description=metadata["description"],
-            default_branch=metadata["default_branch"],
             latest_version=metadata["latest_version"],
         )
 
@@ -68,11 +66,6 @@ class RepositoryConfig:
     # Runtime metadata
     last_updated: datetime | None = None
     last_commit: str | None = None
-
-    @property
-    def effective_branch(self) -> str:
-        """Get the branch to use (specified or default)."""
-        return self.branch or self.repository.default_branch
 
     @property
     def effective_version(self) -> str | None:
@@ -122,7 +115,6 @@ class RepositoryConfig:
         repository = _repository_from_stored(
             declared["url"],
             description=state.get("description"),
-            default_branch=declared.get("branch") or "main",
             latest_version=state.get("version"),
         )
 
@@ -131,7 +123,6 @@ class RepositoryConfig:
             version_source = _repository_from_stored(
                 declared["version_url"],
                 description=None,
-                default_branch="main",
                 latest_version=state.get("version"),
             )
 
@@ -155,7 +146,6 @@ class RepositoryConfig:
 def _repository_from_stored(
     url: str,
     description: str | None,
-    default_branch: str,
     latest_version: str | None,
 ) -> GitRepository:
     """Build a GitRepository from stored data, parsing but never fetching."""
@@ -173,6 +163,5 @@ def _repository_from_stored(
         owner=owner,
         repo=repo,
         description=description,
-        default_branch=default_branch,
         latest_version=latest_version,
     )

@@ -126,7 +126,6 @@ class GitHubProvider(RepositoryProvider):
         # GitHub sends "description": null for repos without one
         metadata = {
             "description": data.get("description"),
-            "default_branch": data.get("default_branch", "main"),
             "latest_version": None,
         }
 
@@ -148,14 +147,12 @@ class GitHubProvider(RepositoryProvider):
     def _fetch_with_api(self, owner: str, repo: str) -> dict[str, Any]:
         metadata = {
             "description": None,
-            "default_branch": "main",
             "latest_version": None,
         }
 
         data = _get_json(f"https://api.github.com/repos/{owner}/{repo}")
         if data:
             metadata["description"] = data.get("description")
-            metadata["default_branch"] = data.get("default_branch", "main")
 
         release = _get_json(
             f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
@@ -250,18 +247,16 @@ class GiteaProvider(RepositoryProvider):
 
         metadata = {
             "description": None,
-            "default_branch": "main",
             "latest_version": None,
         }
 
         data = _get_json(api_base)
         if data is None:
-            # Not a Gitea/Forgejo API host; cloning still works with defaults
+            # Not a Gitea/Forgejo API host; cloning still works without metadata
             return metadata
 
         # Gitea sends "" for repos without one
         metadata["description"] = data.get("description") or None
-        metadata["default_branch"] = data.get("default_branch", "main")
 
         release = _get_json(f"{api_base}/releases/latest")
         version = (release or {}).get("tag_name", "")
