@@ -137,7 +137,8 @@ class RepositoryConfig:
             return (
                 self.pin[:12]
                 if COMMIT.fullmatch(self.pin)
-                else release_version(self.pin)
+                # A codename pin still names exactly what is on disk
+                else release_version(self.pin) or self.pin
             )
         if self.version_source:
             return self.version_source.latest_version
@@ -274,10 +275,12 @@ class RepositoryConfig:
 
 
 def _latest_tag(path: Path) -> str | None:
-    """The newest tag reachable from a local checkout's HEAD; None for an
-    untagged repo or a plain directory."""
+    """The version of the newest version-like tag reachable from a local
+    checkout's HEAD. Tags without a digit are bookmarks and are skipped, so
+    they cannot hide an older release tag. None for an untagged repo or a
+    plain directory."""
     result = subprocess.run(
-        ["git", "-C", str(path), "describe", "--tags", "--abbrev=0"],
+        ["git", "-C", str(path), "describe", "--tags", "--abbrev=0", "--match=*[0-9]*"],
         capture_output=True,
         text=True,
         check=False,

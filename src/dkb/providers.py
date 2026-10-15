@@ -149,11 +149,11 @@ VERSION_IN_TAG = re.compile(r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$")
 
 def release_version(tag: str) -> str | None:
     """The version a release tag names, without its prefix. A tag with no
-    number (a codename) is kept whole rather than guessed at."""
+    number (a codename, a bookmark) names no version: None."""
     if not tag:
         return None
     match = VERSION_IN_TAG.search(tag)
-    return match.group() if match else tag
+    return match.group() if match else None
 
 
 def _gh(endpoint: str) -> Any | None:
