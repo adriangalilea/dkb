@@ -6,6 +6,7 @@ None; "could not ask" raises, so a network hiccup never erases a version.
 
 import functools
 import json
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -137,8 +138,22 @@ def _github_metadata(data: dict, release: dict | None) -> dict[str, Any]:
     # GitHub sends "description": null for repos without one
     return {
         "description": data.get("description"),
-        "latest_version": (release or {}).get("tag_name", "").lstrip("v") or None,
+        "latest_version": release_version((release or {}).get("tag_name", "")),
     }
+
+
+# A number (dotted or not), optionally with a pre-release/build suffix, at
+# the end of the tag: "v2", "shadcn@4.21.5", "release-2.0.0-rc.1"
+VERSION_IN_TAG = re.compile(r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$")
+
+
+def release_version(tag: str) -> str | None:
+    """The version a release tag names, without its prefix. A tag with no
+    number (a codename) is kept whole rather than guessed at."""
+    if not tag:
+        return None
+    match = VERSION_IN_TAG.search(tag)
+    return match.group() if match else tag
 
 
 def _gh(endpoint: str) -> Any | None:
@@ -244,7 +259,7 @@ class GiteaProvider(RepositoryProvider):
         return {
             # Gitea sends "" for repos without one
             "description": data.get("description") or None,
-            "latest_version": version.lstrip("v") or None,
+            "latest_version": release_version(version),
         }
 
 
