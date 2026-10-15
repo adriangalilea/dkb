@@ -10,7 +10,6 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from dkb import console
 from dkb.config import write_atomic
 from dkb.models import RepositoryConfig
 
@@ -101,7 +100,6 @@ class SkillManager:
         )
 
         write_atomic(SKILL_FILE, "\n".join(content))
-        console.print(f"[dim]skill: {SKILL_FILE}[/dim]", highlight=False)
 
     def _description(self, names: list) -> str:
         """Always-visible skill description: docs location pattern plus the

@@ -1,20 +1,18 @@
-"""Repository operations: add, remove, update, status, clone."""
+"""Repository operations: declare, add, remove, prune, update, clone.
+
+Work only: nothing here prints. Each operation returns what happened and
+`view` draws it; long operations take a callback to report progress.
+"""
 
 import difflib
-import json
 import shutil
 import subprocess
-import sys
 import tempfile
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rich.markup import escape
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.table import Table
-
-from dkb import console
 from dkb.config import STATE_FILE, ConfigManager, write_atomic
 from dkb.models import COMMIT, GitRepository, RepositoryConfig
 from dkb.providers import provider_registry
@@ -32,6 +30,10 @@ STAGING_SUFFIX = ".partial"
 SEARCH_IGNORE = f"!*\n{STATE_FILE.name}\n*{STAGING_SUFFIX}\n"
 IGNORE_FILE = ".ignore"
 
+# report(name, state, detail): state is syncing, updated, unchanged or failed;
+# detail is the version reached, or the exception a failed repo raised
+Report = Callable[[str, str, str | Exception], None]
+
 
 class RepositoryManager:
     """Manages repository operations."""
@@ -41,22 +43,24 @@ class RepositoryManager:
         self.config_manager = ConfigManager()
         self.skill_manager = SkillManager(data_dir)
 
-    def _prepare_data_dir(self):
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        ignore = self.data_dir / IGNORE_FILE
-        if not ignore.exists() or ignore.read_text() != SEARCH_IGNORE:
-            write_atomic(ignore, SEARCH_IGNORE)
+    def known(self, names: list[str]) -> dict[str, RepositoryConfig]:
+        """The catalogue, or only `names` from it (a typo suggests the closest)."""
+        configs = self.config_manager.load()
+        if not names:
+            return configs
+        _require_known(names, configs)
+        return {name: configs[name] for name in names}
 
-    def add(
+    def declare(
         self,
         source: str,
         branch: str | None = None,
         pin: str | None = None,
         version_url: str | None = None,
         name: str | None = None,
-    ):
-        """Add a catalogue entry: a remote repo (following or pinned) or a
-        local directory, then materialize it."""
+    ) -> RepositoryConfig:
+        """The entry `dkb add` would create, validated, before any fetch: a
+        remote repo (following or pinned) or a local directory."""
         if source.startswith(("/", "~", ".")):
             declared = _local_entry(source, name, branch, pin, version_url)
         else:
@@ -69,18 +73,73 @@ class RepositoryManager:
                 f"({configs[declared.name].source}); pick another with --name, "
                 "or `dkb remove` it first"
             )
+        return declared
 
+    def add(self, declared: RepositoryConfig) -> RepositoryConfig:
+        """Materialize a declared entry, then record it in the catalogue."""
         self._prepare_data_dir()
-        with console.status(f"Fetching [cyan]{declared.name}[/cyan]..."):
-            _, config = self._sync(declared)
-
+        _, config = self._sync(declared)
         self.config_manager.add(config)
         self.skill_manager.update(self.config_manager.load())
+        return config
 
-        console.print(
-            f"[green]✓[/green] [cyan]{config.name}[/cyan] "
-            f"{config.effective_version or ''} → {self.data_dir / config.name}"
+    def remove(self, names: list[str]):
+        _require_known(names, self.config_manager.load())
+        for name in names:
+            self.config_manager.remove(name)
+            _delete(self.data_dir / name)
+        self.skill_manager.update(self.config_manager.load())
+
+    def prune(self) -> list[str]:
+        """Delete cache entries the catalogue no longer declares."""
+        self._prepare_data_dir()
+        configs = self.config_manager.load()
+        own = {STATE_FILE.name, IGNORE_FILE}
+        stray = sorted(
+            entry
+            for entry in self.data_dir.iterdir()
+            if entry.name not in own and entry.name not in configs
         )
+        for entry in stray:
+            _delete(entry)
+        return [entry.name for entry in stray]
+
+    def update(self, names: list[str], report: Report) -> list[str]:
+        """Reconcile the cache with the catalogue (all of it, or `names`) in
+        parallel, save, regenerate the skill. Returns the names that failed;
+        a failed repo keeps its previous config and cache entry."""
+        configs = self.config_manager.load()
+        targets = self.known(names)
+        self._prepare_data_dir()
+
+        def one(name: str, config: RepositoryConfig) -> RepositoryConfig | None:
+            report(name, "syncing", "")
+            try:
+                outcome, synced = self._sync(config)
+            except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
+                report(name, "failed", e)
+                return None
+            report(name, outcome, synced.effective_version or "")
+            return synced
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {name: pool.submit(one, name, c) for name, c in targets.items()}
+            results = {name: future.result() for name, future in futures.items()}
+
+        merged = {name: results.get(name) or config for name, config in configs.items()}
+        self.config_manager.save(merged)
+        self.skill_manager.update(merged)
+        return sorted(name for name, result in results.items() if result is None)
+
+    def missing(self, configs: dict[str, RepositoryConfig]) -> list[str]:
+        """Declared entries with nothing on disk (run `dkb update`)."""
+        return [name for name in configs if not (self.data_dir / name).exists()]
+
+    def _prepare_data_dir(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        ignore = self.data_dir / IGNORE_FILE
+        if not ignore.exists() or ignore.read_text() != SEARCH_IGNORE:
+            write_atomic(ignore, SEARCH_IGNORE)
 
     def _sync(self, config: RepositoryConfig) -> tuple[str, RepositoryConfig]:
         """Bring one entry's cache in line with its declaration: 'updated' or
@@ -115,191 +174,6 @@ class RepositoryManager:
         if target.exists() and refreshed.is_current(remote_commit):
             return "unchanged", refreshed.checked(now)
         return "updated", refreshed.cloned(self._clone_repository(refreshed), now)
-
-    def remove(self, names: list[str]):
-        """Remove repositories."""
-        configs = self.config_manager.load()
-        _require_known(names, configs)
-
-        for name in names:
-            self.config_manager.remove(name)
-            _delete(self.data_dir / name)
-            console.print(f"[red]✗[/red] {name} removed")
-
-        self.skill_manager.update(self.config_manager.load())
-
-    def _update_one(
-        self,
-        name: str,
-        config: RepositoryConfig,
-        progress: Progress,
-        task_id,
-        pad: int,
-    ) -> RepositoryConfig | None:
-        """Worker for parallel update: the repo's new config, or None when it
-        failed (its old config and cache entry stay as they were)."""
-        padded = name.ljust(pad)
-        try:
-            progress.update(task_id, description=f"[cyan]{padded}[/cyan] syncing...")
-            outcome, synced = self._sync(config)
-            line = (
-                f"[green]✓ {padded} updated[/green]"
-                if outcome == "updated"
-                else f"[dim]- {padded} unchanged[/dim]"
-            )
-            progress.update(task_id, description=line, completed=1)
-            return synced
-        except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
-            progress.update(
-                task_id,
-                description=f"[red]✗ {padded} {escape(explain(e))}[/red]",
-                completed=1,
-            )
-            return None
-
-    def update(self, names: list[str] | None = None):
-        """Reconcile the cache with the catalogue: fetch declared repos that are
-        missing or changed upstream, prune clones nobody declares, and
-        regenerate the skill. Idempotent; a fresh machine runs it once."""
-        configs = self.config_manager.load()
-        self._prepare_data_dir()
-
-        if names:
-            _require_known(names, configs)
-            configs_to_update = {name: configs[name] for name in names}
-        else:
-            configs_to_update = configs
-            own = {STATE_FILE.name, IGNORE_FILE}
-            for entry in self.data_dir.iterdir():
-                if entry.name in own or entry.name in configs:
-                    continue
-                _delete(entry)
-                console.print(f"[red]✗[/red] {entry.name} pruned (not in catalogue)")
-
-        if not configs_to_update:
-            console.print(
-                "[yellow]The catalogue is empty.[/yellow] Add docs with "
-                "`dkb add owner/repo/path`"
-            )
-            return
-
-        pad = max(len(n) for n in configs_to_update)
-
-        progress = Progress(
-            SpinnerColumn(finished_text=" "),
-            TextColumn("{task.description}"),
-            console=console,
-        )
-
-        with progress:
-            tasks = {
-                name: progress.add_task(
-                    f"[cyan]{name.ljust(pad)}[/cyan] waiting...", total=1
-                )
-                for name in configs_to_update
-            }
-
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                futures = {
-                    name: pool.submit(
-                        self._update_one, name, config, progress, tasks[name], pad
-                    )
-                    for name, config in configs_to_update.items()
-                }
-                results = {name: future.result() for name, future in futures.items()}
-
-        # A failed repo keeps its previous config: its clone was not touched
-        merged = {name: results.get(name) or config for name, config in configs.items()}
-        self.config_manager.save(merged)
-        self.skill_manager.update(merged)
-
-        failed = sorted(name for name, result in results.items() if result is None)
-        if failed:
-            raise RuntimeError(f"failed to update: {', '.join(failed)}")
-
-    def status(self, names: list[str] | None = None, as_json: bool = False) -> bool:
-        """Show status of repositories: table for humans, --json for tools.
-        Returns False when a declared repo has no clone (run `dkb update`)."""
-        configs = self.config_manager.load()
-
-        if names:
-            _require_known(names, configs)
-            configs = {n: configs[n] for n in names}
-
-        if as_json:
-            payload = {
-                name: {
-                    **config.to_dict(),
-                    "location": str(self.data_dir / name),
-                }
-                for name, config in sorted(configs.items())
-            }
-            print(json.dumps(payload, indent=2))
-            return all((self.data_dir / name).exists() for name in configs)
-
-        if not configs:
-            console.print(
-                "[yellow]Nothing cached yet.[/yellow] Add docs with "
-                "`dkb add owner/repo/path` (see `dkb add -h`)"
-            )
-            return True
-
-        header = (
-            "NAME",
-            "VERSION",
-            "LOCATION",
-            "SOURCE",
-            "VERSION FROM",
-            "DOCS CHANGED",
-            "CHECKED",
-        )
-        rows = []
-        missing = []
-        for name, config in sorted(configs.items()):
-            present = (self.data_dir / name).exists()
-            if not present:
-                missing.append(name)
-            rows.append(
-                (
-                    name,
-                    config.effective_version or "-",
-                    str(self.data_dir / name),
-                    config.source,
-                    config.version_source.display_name
-                    if config.version_source
-                    else "-",
-                    ("live" if config.local else _age(config.last_updated))
-                    if present
-                    else "MISSING",
-                    _age(config.last_checked) if present else "run dkb update",
-                )
-            )
-
-        # Piped output (agents, scripts): one greppable line per repo,
-        # location included, no box drawing to mangle
-        if not sys.stdout.isatty():
-            last = len(header) - 1
-            widths = [max(len(row[i]) for row in [header, *rows]) for i in range(last)]
-            for row in [header, *rows]:
-                cells = [row[i].ljust(widths[i]) for i in range(last)]
-                print("  ".join([*cells, row[last]]).rstrip())
-            return not missing
-
-        table = Table(
-            caption=f"docs at {self.data_dir}/<name> · full config: dkb status --json",
-        )
-        table.add_column("Name", style="cyan", overflow="fold")
-        table.add_column("Version", style="green", overflow="fold")
-        table.add_column("Source", style="blue", overflow="fold")
-        table.add_column("Version from", style="dim", overflow="fold")
-        table.add_column("Docs changed", style="yellow")
-        table.add_column("Checked", style="dim")
-
-        for name, version, _, *rest in rows:
-            table.add_row(name, version, *rest)
-
-        console.print(table)
-        return not missing
 
     def _get_remote_commit(self, url: str, branch: str | None) -> str:
         """Tip of the declared branch, or of the remote's HEAD (its default
@@ -478,13 +352,6 @@ def _missing_path(repo_path: Path, path: str) -> str:
     return f"path '{path}' not found; {where} has: {', '.join(entries) or 'nothing'}"
 
 
-def explain(e: Exception) -> str:
-    """One line a person can act on: git's own message, not its argv."""
-    if isinstance(e, subprocess.CalledProcessError) and e.stderr:
-        return " ".join(e.stderr.split())
-    return str(e)
-
-
 def _require_known(names: list[str], configs: dict[str, RepositoryConfig]):
     unknown = [n for n in names if n not in configs]
     if not unknown:
@@ -494,17 +361,6 @@ def _require_known(names: list[str], configs: dict[str, RepositoryConfig]):
         close = difflib.get_close_matches(n, configs, n=1)
         hints.append(f"'{n}'" + (f" (did you mean '{close[0]}'?)" if close else ""))
     raise ValueError(f"not in the catalogue: {', '.join(hints)}; `dkb status` lists it")
-
-
-def _age(when: datetime | None) -> str:
-    if when is None:
-        return "never"
-    seconds = (datetime.now(UTC) - when).total_seconds()
-    if seconds < 3600:
-        return f"{int(seconds / 60)}m ago"
-    if seconds < 86400:
-        return f"{int(seconds / 3600)}h ago"
-    return f"{int(seconds / 86400)}d ago"
 
 
 def _delete(path: Path):

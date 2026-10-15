@@ -24,31 +24,29 @@ pipx install dkb
 
 ```
 $ dkb add tailwindlabs/tailwindcss.com/src/docs --version-url tailwindlabs/tailwindcss
-✓ tailwindcss 4.3.3 → ~/.local/share/dkb/tailwindcss
+✓ tailwindcss 4.3.3 → ~/.local/share/dkb/tailwindcss 6.1s
 
-$ dkb add colinhacks/zod/packages/docs/content
-✓ zod 4.6.7 → ~/.local/share/dkb/zod
+$ dkb add colinhacks/zod --pin v3.24.0 --name zod-3
+✓ zod-3 3.24.0 → ~/.local/share/dkb/zod-3 5.5s
 
 $ dkb                      # alone: the status
-┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
-┃ Name        ┃ Version ┃ Source                       ┃ Version from             ┃ Docs changed ┃ Checked ┃
-┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
-│ tailwindcss │ 4.3.3   │ tailwindlabs/tailwindcss.com │ tailwindlabs/tailwindcss │ 35d ago      │ 2m ago  │
-│ zod         │ 4.6.7   │ colinhacks/zod               │ -                        │ 1d ago       │ 2m ago  │
-└─────────────┴─────────┴──────────────────────────────┴──────────────────────────┴──────────────┴─────────┘
+NAME         VERSION  SOURCE                        VERSION FROM              DOCS CHANGED  CHECKED
+tailwindcss  4.3.3    tailwindlabs/tailwindcss.com  tailwindlabs/tailwindcss  35d ago       2m ago
+zod-3        3.24.0   colinhacks/zod@v3.24.0        -                         1d ago        2m ago
+docs at ~/.local/share/dkb/<name> · full config: dkb status --json
 
-$ dkb update               # parallel, skips what did not move upstream
-  - tailwindcss unchanged
-  ✓ zod         updated
+$ dkb update               # parallel, a live table; skips what did not move upstream
+-  tailwindcss  unchanged  4.3.3
+-  zod-3        unchanged  3.24.0
 
-$ dkb update zdo
-Error: not in the catalogue: 'zdo' (did you mean 'zod'?); `dkb status` lists it
+$ dkb update tailwind
+Error: not in the catalogue: 'tailwind' (did you mean 'tailwindcss'?); `dkb status` lists it
 
 $ dkb add n0-computer/iroh-ffi/IrohLib/Docs
-Error: path 'IrohLib/Docs' not found; 'IrohLib/' has: .swiftpm/, Sources/, Tests/, .gitignore, README.md
+⨯ fetching iroh-ffi 7.4s path 'IrohLib/Docs' not found; 'IrohLib/' has: .swiftpm/, Sources/, Tests/, .gitignore, README.md
 ```
 
-Piped (`dkb status | grep zod`, an agent's shell), `status` prints one plain line per repo with a header and the docs location; `dkb status --json` prints everything. `dkb -h` lists the files dkb owns and more `add` examples.
+The same table is colored in a terminal and plain aligned text when piped (`dkb status | grep zod`, an agent's shell). Data goes to stdout (`status`, `status --json`); progress and messages go to stderr. `dkb -h` lists the files dkb owns and more `add` examples. Terminal output is py-utils `cli` (the port of ts-utils `cli`): tables, palette, live regions.
 
 ## Configuration
 

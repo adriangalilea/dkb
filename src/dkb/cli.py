@@ -4,11 +4,9 @@ import argparse
 import subprocess
 import sys
 
-from rich.markup import escape
-
-from dkb import DESCRIPTION, NAME, VERSION, console
+from dkb import DESCRIPTION, NAME, VERSION, view
 from dkb.config import CONFIG_FILE, DATA_DIR
-from dkb.manager import RepositoryManager, explain
+from dkb.manager import RepositoryManager
 from dkb.skill import SKILL_FILE
 
 ADD_EXAMPLES = """examples:
@@ -124,26 +122,63 @@ def main():
     manager = RepositoryManager(DATA_DIR)
 
     try:
-        if args.command == "add":
-            manager.add(args.source, args.branch, args.pin, args.version_url, args.name)
-        elif args.command == "remove":
-            manager.remove(args.names)
-        elif args.command == "update":
-            manager.update(args.names)
-        elif args.command == "status" or args.command is None:
-            names = getattr(args, "names", [])
-            if not manager.status(names, getattr(args, "json", False)):
-                sys.exit(1)
-        elif args.command == "skill":
-            manager.skill_manager.update(manager.config_manager.load())
+        sys.exit(run(args, manager))
     except KeyboardInterrupt:
-        console.print("\n[dim]interrupted[/dim]")
+        view.message("interrupted")
         sys.exit(130)
+    except view.Shown:
+        sys.exit(1)
     except (ValueError, RuntimeError, subprocess.CalledProcessError) as e:
         # Expected failures (bad input, git errors) get one line; anything
         # else is a dkb bug and keeps its traceback
-        console.print(f"[red]Error:[/red] {escape(explain(e))}", highlight=False)
+        view.error(e)
         sys.exit(1)
+
+
+def run(args: argparse.Namespace, manager: RepositoryManager) -> int:
+    """One command: the manager works, the view shows. Returns the exit code."""
+    if args.command == "add":
+        declared = manager.declare(
+            args.source, args.branch, args.pin, args.version_url, args.name
+        )
+        with view.adding(declared.name) as added:
+            config = manager.add(declared)
+            added(config, manager.data_dir / config.name)
+        return 0
+
+    if args.command == "remove":
+        manager.remove(args.names)
+        for name in args.names:
+            view.removed(name)
+        return 0
+
+    if args.command == "update":
+        if not args.names:
+            for name in manager.prune():
+                view.pruned(name)
+        targets = manager.known(args.names)
+        if not targets:
+            view.nothing_cached()
+            return 0
+        with view.updating(sorted(targets)) as report:
+            failed = manager.update(args.names, report)
+        if failed:
+            raise RuntimeError(f"failed to update: {', '.join(failed)}")
+        return 0
+
+    if args.command == "skill":
+        manager.skill_manager.update(manager.config_manager.load())
+        return 0
+
+    # status, also what `dkb` alone runs
+    configs = manager.known(getattr(args, "names", []))
+    if getattr(args, "json", False):
+        view.status_json(configs, manager.data_dir)
+    elif configs:
+        view.status(configs, manager.data_dir)
+    else:
+        view.nothing_cached()
+    return 1 if manager.missing(configs) else 0
 
 
 if __name__ == "__main__":

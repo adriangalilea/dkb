@@ -9,15 +9,14 @@ Every machine that shares the catalogue reaches the same cache through
 """
 
 import json
-import os
 from pathlib import Path
+
+from py_utils import xdg
 
 from dkb.models import RepositoryConfig
 
-XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-XDG_DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-CONFIG_FILE = XDG_CONFIG_HOME / "dkb" / "config.json"
-DATA_DIR = XDG_DATA_HOME / "dkb"
+CONFIG_FILE = xdg.config / "dkb" / "config.json"
+DATA_DIR = xdg.data / "dkb"
 STATE_FILE = DATA_DIR / "state.json"
 LEGACY_CONFIG_FILE = DATA_DIR / "config.json"
 
