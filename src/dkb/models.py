@@ -166,8 +166,11 @@ class RepositoryConfig:
     def is_current(self, remote_commit: str | None) -> bool:
         """The clone on disk matches the declaration (a catalogue edited
         elsewhere changes paths without moving the commit) and, unless
-        pinned, upstream."""
-        if self.fetched != self.content():
+        pinned, upstream. A key the record predates reads as unset, so a
+        content key added in a later dkb doesn't make every clone stale."""
+        if self.fetched is None:
+            return False
+        if any(self.fetched.get(k) != v for k, v in self.content().items()):
             return False
         return self.pin is not None or remote_commit == self.last_commit
 
