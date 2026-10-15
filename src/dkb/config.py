@@ -76,7 +76,13 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, data: dict):
+    write_atomic(path, json.dumps(data, indent=2) + "\n")
+
+
+def write_atomic(path: Path, text: str):
+    """Write beside the target, then rename over it: an interrupted write
+    leaves the old file, never a truncated catalogue."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    tmp.replace(path)

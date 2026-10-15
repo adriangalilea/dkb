@@ -6,13 +6,16 @@ and carries versions, locations, and dkb usage.
 """
 
 import html
+import os
 from collections import Counter
 from pathlib import Path
 
 from dkb import console
+from dkb.config import write_atomic
 from dkb.models import RepositoryConfig
 
-SKILL_FILE = Path.home() / ".claude" / "skills" / "dkb" / "SKILL.md"
+CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+SKILL_FILE = CLAUDE_DIR / "skills" / "dkb" / "SKILL.md"
 MAX_DESCRIPTION_LENGTH = 1024
 
 MAX_STRUCTURE_ENTRIES = 15
@@ -91,11 +94,8 @@ class SkillManager:
             ]
         )
 
-        SKILL_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SKILL_FILE.write_text("\n".join(content))
-        console.print(f"   [green]✓[/green] Updated {SKILL_FILE}")
-
-        self._migrate_legacy_claude_md()
+        write_atomic(SKILL_FILE, "\n".join(content))
+        console.print(f"[dim]skill: {SKILL_FILE}[/dim]", highlight=False)
 
     def _description(self, names: list) -> str:
         """Always-visible skill description: docs location pattern plus the
@@ -143,27 +143,5 @@ class SkillManager:
     def _get_help_text(self) -> str:
         from dkb.cli import build_parser
 
-        return build_parser().format_help().strip()
-
-    def _migrate_legacy_claude_md(self):
-        """Nuke the CLAUDE.md injection the skill replaces."""
-        legacy = self.data_dir / "CLAUDE.md"
-        if legacy.exists():
-            legacy.unlink()
-            console.print(f"   [yellow]✗[/yellow] Removed legacy {legacy}")
-
-        user_claude_md = Path.home() / "CLAUDE.md"
-        if not user_claude_md.exists():
-            return
-
-        import_line = f"@{legacy}"
-        lines = user_claude_md.read_text().splitlines()
-        if import_line not in [line.strip() for line in lines]:
-            return
-
-        kept = [line for line in lines if line.strip() != import_line]
-        user_claude_md.write_text("\n".join(kept) + "\n")
-        console.print(
-            f"   [yellow]✗[/yellow] Removed [cyan]{import_line}[/cyan] import "
-            f"from {user_claude_md} (replaced by the skill)"
-        )
+        # Fixed width: the skill must not change with the terminal it ran in
+        return build_parser(width=100).format_help().strip()

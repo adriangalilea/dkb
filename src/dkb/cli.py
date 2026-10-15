@@ -4,74 +4,100 @@ import argparse
 import subprocess
 import sys
 
+from rich.markup import escape
+
 from dkb import DESCRIPTION, NAME, VERSION, console
-from dkb.config import DATA_DIR
-from dkb.manager import RepositoryManager
+from dkb.config import CONFIG_FILE, DATA_DIR
+from dkb.manager import RepositoryManager, explain
+from dkb.skill import SKILL_FILE
+
+ADD_EXAMPLES = """examples:
+  dkb add tailwindlabs/tailwindcss.com/src/docs     only a docs folder (sparse clone)
+  dkb add denoland/docs                             the whole repo
+  dkb add https://github.com/astral-sh/uv/tree/main/docs
+  dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
+                                                    docs repo + version from the library
+  dkb add https://codeberg.org/owner/repo/src/branch/main/docs"""
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser."""
+def build_parser(width: int | None = None) -> argparse.ArgumentParser:
+    """Build the argument parser; `width` pins help formatting (default:
+    the terminal's)."""
+
+    def formatter(prog: str) -> argparse.HelpFormatter:
+        return argparse.RawDescriptionHelpFormatter(prog, width=width)
+
     parser = argparse.ArgumentParser(
         prog=NAME,
         description=f"{NAME} v{VERSION}\n\n{DESCRIPTION}",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples:
-  # Add entire repository
-  dkb add https://github.com/denoland/docs.git
+        formatter_class=formatter,
+        epilog=f"""Running `dkb` alone shows the status.
 
-  # Add specific paths using shorthand notation
-  dkb add tailwindlabs/tailwindcss.com/src/docs
-  dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
+files:
+  {CONFIG_FILE}   the catalogue (track it in dotfiles)
+  {DATA_DIR}/<name>   the docs, read them directly
+  {SKILL_FILE}   what Claude Code sees
 
-  # Add specific paths using full URLs
-  dkb add https://github.com/astral-sh/uv/tree/main/docs
-
-  # Add from Gitea/Forgejo forges (codeberg.org, self-hosted)
-  dkb add https://codeberg.org/owner/repo/src/branch/main/docs
-
-  # Other commands
-  dkb remove tailwind
-  dkb update
-  dkb status""",
+{ADD_EXAMPLES}""",
     )
+    parser.add_argument("-V", "--version", action="version", version=VERSION)
 
-    subparsers = parser.add_subparsers(
-        dest="command", help="Available commands", required=True
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    add_parser = subparsers.add_parser(
+        "add",
+        help="Cache a docs repo (or a folder of one)",
+        description="Cache a docs repo, or only a folder of it, and list it in the skill.",
+        epilog=ADD_EXAMPLES,
+        formatter_class=formatter,
     )
-
-    add_parser = subparsers.add_parser("add", help="Add a new repository")
     add_parser.add_argument(
         "url",
-        help="Repository URL (e.g., github.com/owner/repo/path or owner/repo/path)",
+        help="owner/repo[/path], or a GitHub / Gitea / Forgejo URL",
     )
     add_parser.add_argument(
-        "-b", "--branch", help="Branch to fetch (default: repository's default branch)"
+        "-b", "--branch", help="Branch to fetch (default: the remote's default branch)"
     )
     add_parser.add_argument(
         "--version-url",
-        help="Source repository URL to fetch version from",
+        metavar="URL",
+        help="Repo whose releases version these docs (when docs live apart from the code)",
     )
     add_parser.add_argument(
         "--name",
-        help="Name for the cached docs (default: derived from the repository)",
+        help="Name in the cache (default: the version repo's name, else the docs repo's)",
     )
 
-    remove_parser = subparsers.add_parser("remove", help="Remove a repository")
-    remove_parser.add_argument("name", help="Name of the repository to remove")
+    remove_parser = subparsers.add_parser("remove", help="Drop cached repos")
+    remove_parser.add_argument("names", nargs="+", metavar="NAME")
 
-    update_parser = subparsers.add_parser("update", help="Update repositories")
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Sync the cache with the catalogue",
+        description=(
+            "Fetch what is missing or changed upstream, refresh versions, prune "
+            "what the catalogue no longer declares, regenerate the skill. "
+            "Exits 1 if any repo failed."
+        ),
+    )
     update_parser.add_argument(
-        "names", nargs="*", help="Specific repositories to update (default: all)"
+        "names",
+        nargs="*",
+        metavar="NAME",
+        help="Only these (default: all, with pruning)",
     )
 
-    status_parser = subparsers.add_parser("status", help="Show status of repositories")
+    status_parser = subparsers.add_parser(
+        "status",
+        help="List cached repos (exits 1 if one is missing)",
+    )
     status_parser.add_argument(
-        "names", nargs="*", help="Specific repositories (default: all)"
+        "names", nargs="*", metavar="NAME", help="Only these (default: all)"
     )
     status_parser.add_argument(
         "--json",
         action="store_true",
-        help="Print full configuration (url, paths, version source, location) as JSON",
+        help="Full configuration (url, paths, version source, location) as JSON",
     )
 
     subparsers.add_parser("skill", help="Regenerate the Claude Code skill")
@@ -89,22 +115,22 @@ def main():
         if args.command == "add":
             manager.add(args.url, args.branch, args.version_url, args.name)
         elif args.command == "remove":
-            manager.remove(args.name)
+            manager.remove(args.names)
         elif args.command == "update":
-            manager.update(args.names or None)
-        elif args.command == "status":
-            if not manager.status(args.names or None, args.json):
+            manager.update(args.names)
+        elif args.command == "status" or args.command is None:
+            names = getattr(args, "names", [])
+            if not manager.status(names, getattr(args, "json", False)):
                 sys.exit(1)
         elif args.command == "skill":
-            configs = manager.config_manager.load()
-            manager.skill_manager.update(configs)
+            manager.skill_manager.update(manager.config_manager.load())
     except KeyboardInterrupt:
         console.print("\n[dim]interrupted[/dim]")
         sys.exit(130)
     except (ValueError, RuntimeError, subprocess.CalledProcessError) as e:
         # Expected failures (bad input, git errors) get one line; anything
         # else is a dkb bug and keeps its traceback
-        console.print(f"[red]Error:[/red] {e}")
+        console.print(f"[red]Error:[/red] {escape(explain(e))}", highlight=False)
         sys.exit(1)
 
 

@@ -4,53 +4,53 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from dkb.providers import provider_registry
+from dkb.providers import RepositoryProvider, provider_registry
 
 
 @dataclass
 class GitRepository:
-    """Represents a git repository with all its metadata."""
+    """A repository on a forge: canonical clone URL plus fetched metadata."""
 
     url: str
-    provider: str
     owner: str
     repo: str
+    provider: RepositoryProvider = field(repr=False)
     description: str | None = None
     latest_version: str | None = None
 
     @classmethod
-    def from_url(cls, url: str) -> "GitRepository":
-        """Create GitRepository from URL by fetching metadata."""
-        provider = provider_registry.get_provider(url)
-        if not provider:
-            raise ValueError(f"Unsupported repository URL: {url}")
-
-        normalized_url = provider.normalize_url(url)
-
-        parsed = provider.parse_url(url)  # Use original URL for path parsing
-        if not parsed:
-            raise ValueError(f"Invalid repository URL: {url}")
-
-        owner, repo, _ = parsed
-
-        metadata = provider.fetch_metadata(normalized_url, owner, repo)
-
+    def parse(
+        cls,
+        url: str,
+        description: str | None = None,
+        latest_version: str | None = None,
+    ) -> "GitRepository":
+        """From any accepted URL form, without touching the network."""
+        provider, owner, repo, _ = provider_registry.resolve(url)
         return cls(
-            url=normalized_url,
-            provider=provider.__class__.__name__.replace("Provider", "").lower(),
+            url=provider.normalize_url(url),
             owner=owner,
             repo=repo,
-            description=metadata["description"],
-            latest_version=metadata["latest_version"],
+            provider=provider,
+            description=description,
+            latest_version=latest_version,
         )
+
+    def refresh(self):
+        """Re-read description and latest release from the forge."""
+        metadata = self.provider.fetch_metadata(self.url, self.owner, self.repo)
+        self.description = metadata["description"]
+        self.latest_version = metadata["latest_version"]
 
     @property
     def display_name(self) -> str:
-        """Get display name for the repository."""
         return f"{self.owner}/{self.repo}"
 
 
 DECLARATION_KEYS = {"url", "paths", "branch", "version_url"}
+
+# The declared keys that decide what lands on disk; version_url does not
+CONTENT_KEYS = ("url", "paths", "branch")
 
 
 @dataclass
@@ -63,16 +63,25 @@ class RepositoryConfig:
     branch: str | None = None
     version_source: GitRepository | None = None
 
-    # Runtime metadata
+    # What the clone on disk was made from
     last_updated: datetime | None = None
     last_commit: str | None = None
+    fetched: dict[str, Any] | None = None
 
     @property
     def effective_version(self) -> str | None:
-        """Get the version to display."""
         if self.version_source:
             return self.version_source.latest_version
         return self.repository.latest_version
+
+    def content(self) -> dict[str, Any]:
+        declared = self.declaration()
+        return {k: declared.get(k) for k in CONTENT_KEYS}
+
+    def is_current(self, remote_commit: str) -> bool:
+        """The clone on disk matches both upstream and the declaration (a
+        catalogue edited elsewhere changes paths without moving the commit)."""
+        return remote_commit == self.last_commit and self.fetched == self.content()
 
     def declaration(self) -> dict[str, Any]:
         """The catalogue entry: what to cache, nothing fetched."""
@@ -94,6 +103,8 @@ class RepositoryConfig:
             data["last_updated"] = self.last_updated.isoformat()
         if self.last_commit:
             data["commit"] = self.last_commit
+        if self.fetched:
+            data["fetched"] = self.fetched
         return data
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,56 +123,31 @@ class RepositoryConfig:
                 f"allowed: {sorted(DECLARATION_KEYS)}"
             )
 
-        repository = _repository_from_stored(
+        repository = GitRepository.parse(
             declared["url"],
             description=state.get("description"),
             latest_version=state.get("version"),
         )
 
         version_source = None
-        if "version_url" in declared and declared["version_url"] != declared["url"]:
-            version_source = _repository_from_stored(
-                declared["version_url"],
-                description=None,
-                latest_version=state.get("version"),
+        if "version_url" in declared:
+            version_source = GitRepository.parse(
+                declared["version_url"], latest_version=state.get("version")
             )
+            if version_source.url == repository.url:
+                version_source = None
 
-        config = cls(
+        return cls(
             name=name,
             repository=repository,
             paths=declared.get("paths", []),
             branch=declared.get("branch"),
             version_source=version_source,
+            last_updated=(
+                datetime.fromisoformat(state["last_updated"])
+                if "last_updated" in state
+                else None
+            ),
+            last_commit=state.get("commit"),
+            fetched=state.get("fetched"),
         )
-
-        if "last_updated" in state:
-            config.last_updated = datetime.fromisoformat(state["last_updated"])
-
-        if "commit" in state:
-            config.last_commit = state["commit"]
-
-        return config
-
-
-def _repository_from_stored(
-    url: str,
-    description: str | None,
-    latest_version: str | None,
-) -> GitRepository:
-    """Build a GitRepository from stored data, parsing but never fetching."""
-    provider = provider_registry.get_provider(url)
-    owner, repo, provider_name = "unknown", "unknown", "unknown"
-    if provider:
-        parsed = provider.parse_url(url)
-        if parsed:
-            owner, repo, _ = parsed
-        provider_name = provider.__class__.__name__.replace("Provider", "").lower()
-
-    return GitRepository(
-        url=url,
-        provider=provider_name,
-        owner=owner,
-        repo=repo,
-        description=description,
-        latest_version=latest_version,
-    )

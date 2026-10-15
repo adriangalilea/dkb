@@ -6,7 +6,7 @@ Local documentation manager for vibe coding with Claude Code.
 > [!NOTE]
 > ✨ **Perfect for Claude Code**
 >
-> `dkb` maintains a skill at `~/.claude/skills/dkb/SKILL.md`. The skill description (always visible to the agent) carries the catalogue of cached repos, so Claude always knows what docs are available locally without running a command; the skill body loads on demand with versions, locations, and usage.
+> `dkb` maintains a skill at `~/.claude/skills/dkb/SKILL.md` (`$CLAUDE_CONFIG_DIR/skills/` when set). The skill description (always visible to the agent) carries the catalogue of cached repos, so Claude always knows what docs are available locally without running a command; the skill body loads on demand with versions, locations, and usage.
 
 > Local .md files > MCP
 
@@ -22,68 +22,33 @@ pipx install dkb
 
 ## Usage
 
-```bash
-$ dkb -h
-usage: dkb [-h] {add,remove,update,status,skill} ...
-
-dkb v2.0.0
-
-Developer Knowledge Base - Fetch and organize documentation locally for vibe coding with Claude Code
-
-positional arguments:
-  {add,remove,update,status,skill}
-                        Available commands
-    add                 Add a new repository
-    remove              Remove a repository
-    update              Update repositories
-    status              Show status of all repositories
-    skill               Regenerate the Claude Code skill
-
-options:
-  -h, --help            show this help message and exit
-
-Examples:
-  dkb add https://github.com/denoland/docs.git
-  dkb add tailwindlabs/tailwindcss.com/src/docs
-  dkb add gramiojs/documentation/docs --version-url gramiojs/gramio
-  dkb add https://github.com/astral-sh/uv/tree/main/docs
-  dkb add https://codeberg.org/owner/repo/src/branch/main/docs
-  dkb remove tailwind
-  dkb update
-  dkb status
-
-# Add a repository (entire repo)
-$ dkb add https://github.com/denoland/docs.git
-
-📦 Adding docs...
-   ✓ 2.4.2
-   ✓ Updated /Users/you/.claude/skills/dkb/SKILL.md
-
-# Show status with rich formatting
-$ dkb status
-
-                                    Knowledge Base Status
-┏━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
-┃ Repository   ┃ Version ┃ Docs                     ┃ Source                  ┃ Last Updated ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
-│ better-auth  │ 1.2.12  │ better-auth/better-auth  │ -                       │ 25m ago      │
-│ deno         │ 2.4.2   │ denoland/docs            │ denoland/deno           │ 25m ago      │
-│ nextjs       │ 15.4.2  │ vercel/next.js           │ -                       │ 24m ago      │
-│ tailwind     │ 4.1.11  │ tailwindlabs/tailwindcss.com │ tailwindlabs/tailwindcss │ 12m ago      │
-│ uv           │ 0.8.0   │ astral-sh/uv             │ -                       │ 33m ago      │
-└──────────────┴─────────┴──────────────────────────┴─────────────────────────┴──────────────┘
-
-# Update all repositories (parallel with live progress)
-$ dkb update
-
-  ✓ deno            updated
-  - nextjs          unchanged
-  - tailwind        unchanged
-  - uv              unchanged
-
-Updated: deno
-   ✓ Updated /Users/you/.claude/skills/dkb/SKILL.md
 ```
+$ dkb add tailwindlabs/tailwindcss.com/src/docs --version-url tailwindlabs/tailwindcss
+✓ tailwindcss 4.3.3 → ~/.local/share/dkb/tailwindcss
+
+$ dkb add colinhacks/zod/packages/docs/content
+✓ zod 4.6.7 → ~/.local/share/dkb/zod
+
+$ dkb                      # alone: the status
+┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ Name        ┃ Version ┃ Source                      ┃ Version from             ┃ Fetched ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ tailwindcss │ 4.3.3   │ tailwindlabs/tailwindcss.com │ tailwindlabs/tailwindcss │ 2m ago  │
+│ zod         │ 4.6.7   │ colinhacks/zod              │ -                        │ 1m ago  │
+└─────────────┴─────────┴─────────────────────────────┴──────────────────────────┴─────────┘
+
+$ dkb update               # parallel, skips what did not move upstream
+  - tailwindcss unchanged
+  ✓ zod         updated
+
+$ dkb update zdo
+Error: not in the catalogue: 'zdo' (did you mean 'zod'?); `dkb status` lists it
+
+$ dkb add n0-computer/iroh-ffi/IrohLib/Docs
+Error: path 'IrohLib/Docs' not found; 'IrohLib/' has: .swiftpm/, Sources/, Tests/, .gitignore, README.md
+```
+
+Piped (`dkb status | grep zod`, an agent's shell), `status` prints one plain line per repo with a header and the docs location; `dkb status --json` prints everything. `dkb -h` lists the files dkb owns and more `add` examples.
 
 ## Configuration
 
@@ -92,9 +57,9 @@ Two files, two owners:
 | File | Holds | Changes on |
 |---|---|---|
 | `$XDG_CONFIG_HOME/dkb/config.json` (`~/.config/dkb/config.json`) | the catalogue: `url`, `paths`, `branch`, `version_url` per repo | `dkb add` / `dkb remove` |
-| `$XDG_DATA_HOME/dkb/` (`~/.local/share/dkb/`) | the clones, one directory per repo, plus `state.json` (description, version, commit, last update) | `dkb update` |
+| `$XDG_DATA_HOME/dkb/` (`~/.local/share/dkb/`) | the clones, one directory per repo, plus `state.json` (description, version, commit, what the clone was made from) | `dkb update` |
 
-The catalogue is the declaration and is meant to be tracked in a dotfiles repo. `dkb update` reconciles the cache with it: clones anything declared that is missing, refreshes anything that changed upstream, re-reads every version and description, prunes clones nobody declares, and regenerates the skill; it exits 1 if any repo failed. Without a declared `branch`, a repo follows its remote's default branch, whatever it is called. A fresh machine is one `dkb update` away from the same knowledge base. `dkb status` exits 1 while a declared repo has no clone, so it doubles as a drift check.
+The catalogue is the declaration and is meant to be tracked in a dotfiles repo. `dkb update` reconciles the cache with it: clones anything declared that is missing, re-clones anything whose upstream commit or declared `paths`/`branch` changed, re-reads every version and description, prunes clones nobody declares, and regenerates the skill; it exits 1 if any repo failed. A failed fetch keeps the previous clone and version: new content is assembled beside the old and swapped in only when complete. Without a declared `branch`, a repo follows its remote's default branch, whatever it is called. Metadata comes from `gh` when it is logged in, else from GitHub's public API (60 requests/hour). A fresh machine is one `dkb update` away from the same knowledge base. `dkb status` exits 1 while a declared repo has no clone, so it doubles as a drift check.
 
 ```jsonc
 // ~/.config/dkb/config.json
@@ -121,6 +86,7 @@ Upgrading from dkb 2: the catalogue used to live in the data dir as one file wit
 - 🚀 **Parallel updates** - All repos update concurrently with live progress spinners
 - ⚡ **Smart skip** - Unchanged repos detected via `git ls-remote` without cloning
 - 📂 **Sparse checkout** - Repos with paths only fetch the files they need
+- 🧭 **Errors that say what to do** - typo suggestions, the real contents of a mistyped path, git's own message instead of its command line
 - 🤖 **Claude Code skill** - Maintains `~/.claude/skills/dkb/SKILL.md`; the always-visible description indexes the catalogue so the agent knows what's cached without running anything
 
 ## Roadmap

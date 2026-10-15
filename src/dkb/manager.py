@@ -1,15 +1,17 @@
 """Repository operations: add, remove, update, status, clone."""
 
+import difflib
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
@@ -18,6 +20,10 @@ from dkb.config import STATE_FILE, ConfigManager
 from dkb.models import GitRepository, RepositoryConfig
 from dkb.providers import provider_registry
 from dkb.skill import SkillManager
+
+# Clones are assembled here, inside the data dir, then renamed into place:
+# a failed fetch never leaves a repo half-copied or deleted
+STAGING_SUFFIX = ".partial"
 
 
 class RepositoryManager:
@@ -36,94 +42,59 @@ class RepositoryManager:
         name: str | None = None,
     ):
         """Add a new repository."""
-        provider = provider_registry.get_provider(url)
-        if not provider:
-            raise ValueError(f"Unsupported repository URL: {url}")
+        _, _, repo, path = provider_registry.resolve(url)
+        repository = GitRepository.parse(url)
 
-        parsed = provider.parse_url(url)
-        if not parsed:
-            raise ValueError(f"Invalid repository URL: {url}")
-
-        _owner, repo, extracted_path = parsed
-        paths = [extracted_path] if extracted_path else []
-
-        # The docs repo already carries its own releases: no separate source
-        if version_url and _repo_url(version_url) == _repo_url(url):
-            version_url = None
+        version_source = None
+        if version_url:
+            version_source = GitRepository.parse(version_url)
+            # The docs repo already carries its own releases
+            if version_source.url == repository.url:
+                version_source = None
 
         # Explicit name wins, then the version source repo, then the docs repo
-        if not name:
-            name = repo
-            if version_url:
-                _, name, _ = provider_registry.get_provider(version_url).parse_url(
-                    version_url
-                )
-
-        # Check existence BEFORE fetching metadata
-        existing_configs = self.config_manager.load()
-        if name in existing_configs:
-            raise ValueError(f"Repository '{name}' already exists")
-
-        console.print(f"\n📦 Adding [cyan]{name}[/cyan]...")
-
-        with Progress(
-            TextColumn("   "),
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Fetching repository metadata...", total=None)
-
-            repository = GitRepository.from_url(url)
-
-            version_source = None
-            if version_url:
-                progress.update(task, description="Fetching version source metadata...")
-                version_source = GitRepository.from_url(version_url)
-
-        with Progress(
-            TextColumn("   "),
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Creating configuration...", total=None)
-
-            config = RepositoryConfig(
-                name=name,
-                repository=repository,
-                paths=paths,
-                branch=branch,
-                version_source=version_source,
-            )
-
-            progress.update(task, description="Cloning repository...")
-            self._clone_repository(config)
-
-            self.config_manager.add(config)
-
-            configs = self.config_manager.load()
-            self.skill_manager.update(configs)
-
-            version_str = (
-                f" {config.effective_version}" if config.effective_version else ""
-            )
-            console.print(f"   [green]✓[/green]{version_str}")
-
-    def remove(self, name: str):
-        """Remove a repository."""
-        console.print()
-
-        self.config_manager.remove(name)
-
-        _delete(self.data_dir / name)
-
-        console.print(f"[red]✗[/red] {name} removed")
+        name = name or (version_source.repo if version_source else repo)
 
         configs = self.config_manager.load()
-        self.skill_manager.update(configs)
+        if name in configs:
+            raise ValueError(
+                f"'{name}' is already cached ({configs[name].repository.url}); "
+                "pick another with --name, or `dkb remove` it first"
+            )
+
+        config = RepositoryConfig(
+            name=name,
+            repository=repository,
+            paths=[path] if path else [],
+            branch=branch,
+            version_source=version_source,
+        )
+
+        with console.status(f"Fetching [cyan]{name}[/cyan]..."):
+            repository.refresh()
+            if version_source:
+                version_source.refresh()
+            self._clone_repository(config)
+
+        self.config_manager.add(config)
+        self.skill_manager.update(self.config_manager.load())
+
+        console.print(
+            f"[green]✓[/green] [cyan]{name}[/cyan] "
+            f"{config.effective_version or ''} → {self.data_dir / name}"
+        )
+
+    def remove(self, names: list[str]):
+        """Remove repositories."""
+        configs = self.config_manager.load()
+        _require_known(names, configs)
+
+        for name in names:
+            self.config_manager.remove(name)
+            _delete(self.data_dir / name)
+            console.print(f"[red]✗[/red] {name} removed")
+
+        self.skill_manager.update(self.config_manager.load())
 
     def _update_one(
         self,
@@ -136,7 +107,7 @@ class RepositoryManager:
         """Worker for parallel update: 'updated', 'unchanged' or 'failed'.
         Metadata (version, description) refreshes on every run, since a
         release can land without the docs changing; the clone is redone
-        only when the upstream commit moved or the clone is missing."""
+        only when upstream or the declaration moved, or the clone is gone."""
         padded = name.ljust(pad)
         try:
             progress.update(task_id, description=f"[cyan]{padded}[/cyan] checking...")
@@ -144,12 +115,12 @@ class RepositoryManager:
                 config.repository.url, config.branch
             )
 
-            _refresh_metadata(config.repository)
+            config.repository.refresh()
             if config.version_source:
-                _refresh_metadata(config.version_source)
+                config.version_source.refresh()
 
             present = (self.data_dir / name).exists()
-            if present and remote_commit == config.last_commit:
+            if present and config.is_current(remote_commit):
                 progress.update(
                     task_id,
                     description=f"[dim]- {padded} unchanged[/dim]",
@@ -167,10 +138,9 @@ class RepositoryManager:
             )
             return "updated"
         except Exception as e:  # noqa: BLE001 - one repo failing must not stop the rest
-            detail = getattr(e, "stderr", None) or e
             progress.update(
                 task_id,
-                description=f"[red]✗ {padded} {str(detail).strip()}[/red]",
+                description=f"[red]✗ {padded} {escape(explain(e))}[/red]",
                 completed=1,
             )
             return "failed"
@@ -179,27 +149,25 @@ class RepositoryManager:
         """Reconcile the cache with the catalogue: fetch declared repos that are
         missing or changed upstream, prune clones nobody declares, and
         regenerate the skill. Idempotent; a fresh machine runs it once."""
-        console.print()
         configs = self.config_manager.load()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        if not names:
+        if names:
+            _require_known(names, configs)
+            configs_to_update = {name: configs[name] for name in names}
+        else:
+            configs_to_update = configs
             for entry in self.data_dir.iterdir():
                 if entry == STATE_FILE or entry.name in configs:
                     continue
                 _delete(entry)
                 console.print(f"[red]✗[/red] {entry.name} pruned (not in catalogue)")
 
-        if names:
-            unknown = [n for n in names if n not in configs]
-            if unknown:
-                raise ValueError(f"Not in the catalogue: {', '.join(unknown)}")
-            configs_to_update = {name: configs[name] for name in names}
-        else:
-            configs_to_update = configs
-
         if not configs_to_update:
-            console.print("[yellow]No repositories to update[/yellow]")
+            console.print(
+                "[yellow]The catalogue is empty.[/yellow] Add docs with "
+                "`dkb add owner/repo/path`"
+            )
             return
 
         pad = max(len(n) for n in configs_to_update)
@@ -213,11 +181,12 @@ class RepositoryManager:
         )
 
         with progress:
-            tasks = {}
-            for name in configs_to_update:
-                padded = name.ljust(pad)
-                tid = progress.add_task(f"[cyan]{padded}[/cyan] waiting...", total=1)
-                tasks[name] = tid
+            tasks = {
+                name: progress.add_task(
+                    f"[cyan]{name.ljust(pad)}[/cyan] waiting...", total=1
+                )
+                for name in configs_to_update
+            }
 
             def worker(name: str, config: RepositoryConfig) -> None:
                 outcome = self._update_one(name, config, progress, tasks[name], pad)
@@ -225,21 +194,16 @@ class RepositoryManager:
                     outcomes[name] = outcome
 
             with ThreadPoolExecutor(max_workers=6) as pool:
-                futures = [
+                for future in [
                     pool.submit(worker, name, config)
                     for name, config in configs_to_update.items()
-                ]
-                for future in as_completed(futures):
+                ]:
                     future.result()
 
         self.config_manager.save(configs)
-        updated = sorted(n for n, o in outcomes.items() if o == "updated")
-        failed = sorted(n for n, o in outcomes.items() if o == "failed")
-        if updated:
-            console.print(
-                f"\n[bold]Updated:[/bold] [green]{', '.join(updated)}[/green]"
-            )
         self.skill_manager.update(configs)
+
+        failed = sorted(n for n, o in outcomes.items() if o == "failed")
         if failed:
             raise RuntimeError(f"failed to update: {', '.join(failed)}")
 
@@ -249,9 +213,7 @@ class RepositoryManager:
         configs = self.config_manager.load()
 
         if names:
-            missing = [n for n in names if n not in configs]
-            if missing:
-                raise ValueError(f"Repository '{missing[0]}' not found")
+            _require_known(names, configs)
             configs = {n: configs[n] for n in names}
 
         if as_json:
@@ -266,31 +228,23 @@ class RepositoryManager:
             return all((self.data_dir / name).exists() for name in configs)
 
         if not configs:
-            console.print("[yellow]No repositories found[/yellow]")
+            console.print(
+                "[yellow]Nothing cached yet.[/yellow] Add docs with "
+                "`dkb add owner/repo/path` (see `dkb add -h`)"
+            )
             return True
 
+        header = ("NAME", "VERSION", "LOCATION", "SOURCE", "VERSION FROM", "FETCHED")
         rows = []
         missing = []
         for name, config in sorted(configs.items()):
             if not (self.data_dir / name).exists():
                 missing.append(name)
-                age_str = "MISSING (dkb update)"
+                age = "MISSING (run dkb update)"
             elif config.last_updated:
-                age = datetime.now(UTC) - config.last_updated
-                hours = age.total_seconds() / 3600
-
-                if hours < 1:
-                    age_str = f"{int(age.total_seconds() / 60)}m ago"
-                elif hours < 24:
-                    age_str = f"{int(hours)}h ago"
-                else:
-                    age_str = f"{int(hours / 24)}d ago"
+                age = _age(config.last_updated)
             else:
-                age_str = "never"
-
-            source_display = "-"
-            if config.version_source:
-                source_display = config.version_source.display_name
+                age = "never"
 
             rows.append(
                 (
@@ -298,16 +252,18 @@ class RepositoryManager:
                     config.effective_version or "-",
                     str(self.data_dir / name),
                     config.repository.display_name,
-                    source_display,
-                    age_str,
+                    config.version_source.display_name
+                    if config.version_source
+                    else "-",
+                    age,
                 )
             )
 
         # Piped output (agents, scripts): one greppable line per repo,
         # location included, no box drawing to mangle
         if not sys.stdout.isatty():
-            widths = [max(len(row[i]) for row in rows) for i in range(5)]
-            for row in rows:
+            widths = [max(len(row[i]) for row in [header, *rows]) for i in range(5)]
+            for row in [header, *rows]:
                 print(
                     "  ".join(
                         [*(row[i].ljust(widths[i]) for i in range(5)), row[5]]
@@ -315,20 +271,17 @@ class RepositoryManager:
                 )
             return not missing
 
-        console.print()
         table = Table(
-            title="Knowledge Base Status",
-            title_style="bold",
             caption=f"docs at {self.data_dir}/<name> · full config: dkb status --json",
         )
-        table.add_column("Repository", style="cyan", overflow="fold")
+        table.add_column("Name", style="cyan", overflow="fold")
         table.add_column("Version", style="green", overflow="fold")
-        table.add_column("Docs", style="blue", overflow="fold")
-        table.add_column("Source", style="dim", overflow="fold")
-        table.add_column("Last Updated", style="yellow")
+        table.add_column("Source", style="blue", overflow="fold")
+        table.add_column("Version from", style="dim", overflow="fold")
+        table.add_column("Fetched", style="yellow")
 
-        for name, version, _, docs, source, age_str in rows:
-            table.add_row(name, version, docs, source, age_str)
+        for name, version, _, source, version_from, age in rows:
+            table.add_row(name, version, source, version_from, age)
 
         console.print(table)
         return not missing
@@ -337,129 +290,141 @@ class RepositoryManager:
         """Tip of the declared branch, or of the remote's HEAD (its default
         branch, whatever it is called) when none is declared."""
         ref = f"refs/heads/{branch}" if branch else "HEAD"
-        result = subprocess.run(
-            ["git", "ls-remote", url, ref],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=15,
-        )
-        line = result.stdout.strip()
+        line = _git("ls-remote", url, ref).strip()
         if not line:
-            raise ValueError(f"{url} has no {ref}")
+            raise ValueError(f"{url} has no branch '{branch}'")
         return line.split()[0]
 
     def _clone_repository(self, config: RepositoryConfig):
-        """Clone a repository and copy contents to data dir."""
-        repo_dir = self.data_dir / config.name
+        """Fetch the declared content into a staging dir beside the cache
+        entry, then swap it in. The old clone survives any failure."""
         # No declared branch: git clones the remote's default
         branch_args = ["--branch", config.branch] if config.branch else []
+        target = self.data_dir / config.name
+        staging = self.data_dir / f"{config.name}{STAGING_SUFFIX}"
+        _delete(staging)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir) / "repo"
-
+            sparse_args = ["--sparse", "--no-checkout"] if config.paths else []
+            _git(
+                "clone",
+                "--depth=1",
+                "--filter=blob:none",
+                "--quiet",
+                *sparse_args,
+                *branch_args,
+                config.repository.url,
+                str(repo_path),
+            )
             if config.paths:
-                # Sparse checkout: only fetch the paths we need
-                subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--depth=1",
-                        "--filter=blob:none",
-                        "--sparse",
-                        "--no-checkout",
-                        *branch_args,
-                        "--quiet",
-                        config.repository.url,
-                        str(repo_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "sparse-checkout", "set", *config.paths],
-                    cwd=repo_path,
-                    check=True,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "checkout"],
-                    cwd=repo_path,
-                    check=True,
-                    capture_output=True,
-                )
-            else:
-                # Full shallow clone
-                subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--depth=1",
-                        "--filter=blob:none",
-                        *branch_args,
-                        "--quiet",
-                        config.repository.url,
-                        str(repo_path),
-                    ],
-                    check=True,
-                    capture_output=True,
+                _git("sparse-checkout", "set", *config.paths, cwd=repo_path)
+                _git("checkout", "--quiet", cwd=repo_path)
+
+            commit = _git("rev-parse", "HEAD", cwd=repo_path).strip()
+
+            # A declared path's contents land at the top level; a whole repo
+            # is one implicit path, minus .git
+            sources = []
+            for path in config.paths or [""]:
+                src = repo_path / path
+                if not src.exists():
+                    raise ValueError(_missing_path(repo_path, path))
+                sources.extend(
+                    [src]
+                    if src.is_file()
+                    else [p for p in src.iterdir() if p.name != ".git"]
                 )
 
-            commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
+            staging.mkdir(parents=True)
+            for src in sources:
+                dest = staging / src.name
+                if dest.exists():
+                    raise ValueError(
+                        f"'{src.name}' exists in more than one declared path "
+                        f"({', '.join(config.paths)}): cache them as separate repos"
+                    )
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
 
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir)
-            repo_dir.mkdir(parents=True, exist_ok=True)
+        _delete(target)
+        staging.rename(target)
 
-            if not config.paths:
-                for item in repo_path.iterdir():
-                    if item.name == ".git":
-                        continue
-                    if item.is_dir():
-                        shutil.copytree(item, repo_dir / item.name)
-                    else:
-                        shutil.copy2(item, repo_dir / item.name)
-            else:
-                for path in config.paths:
-                    src = repo_path / path
-                    if not src.exists():
-                        raise ValueError(f"Path '{path}' not found in repository")
-                    if src.is_dir():
-                        for item in src.iterdir():
-                            if item.is_dir():
-                                shutil.copytree(item, repo_dir / item.name)
-                            else:
-                                shutil.copy2(item, repo_dir / item.name)
-                    else:
-                        shutil.copy2(src, repo_dir / src.name)
-
-            config.last_updated = datetime.now(UTC)
-            config.last_commit = commit
+        config.last_updated = datetime.now(UTC)
+        config.last_commit = commit
+        config.fetched = config.content()
 
 
-def _repo_url(url: str) -> str:
-    """Canonical clone URL: the identity of a repo, whatever path or
-    shorthand the user typed."""
-    provider = provider_registry.get_provider(url)
-    if not provider:
-        raise ValueError(f"Unsupported repository URL: {url}")
-    return provider.normalize_url(url)
+def _git(*args: str, cwd: Path | None = None) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=300,
+    ).stdout
 
 
-def _refresh_metadata(repository: GitRepository):
-    """Re-read description and latest release from the forge."""
-    provider = provider_registry.get_provider(repository.url)
-    metadata = provider.fetch_metadata(
-        repository.url, repository.owner, repository.repo
+def _missing_path(repo_path: Path, path: str) -> str:
+    """Name what IS there at the deepest existing ancestor of the missing
+    path. Read from git's tree, not the disk: a sparse checkout only
+    materializes the files along the declared path."""
+    parent = Path(path).parent
+    while True:
+        spec = "HEAD" if parent == Path(".") else f"HEAD:{parent.as_posix()}"
+        listing = subprocess.run(
+            ["git", "ls-tree", spec],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if listing.returncode == 0:
+            break
+        parent = parent.parent
+    # ls-tree lines: "<mode> <type> <sha>\t<name>"; dirs first, they are
+    # where docs live
+    entries = sorted(
+        (
+            name + ("/" if meta.split()[1] == "tree" else "")
+            for meta, name in (
+                line.split("\t", 1) for line in listing.stdout.splitlines()
+            )
+        ),
+        key=lambda entry: (not entry.endswith("/"), entry),
     )
-    repository.description = metadata["description"]
-    repository.latest_version = metadata["latest_version"]
+    where = "the repo root" if parent == Path(".") else f"'{parent.as_posix()}/'"
+    return f"path '{path}' not found; {where} has: {', '.join(entries) or 'nothing'}"
+
+
+def explain(e: Exception) -> str:
+    """One line a person can act on: git's own message, not its argv."""
+    if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+        return " ".join(e.stderr.split())
+    return str(e)
+
+
+def _require_known(names: list[str], configs: dict[str, RepositoryConfig]):
+    unknown = [n for n in names if n not in configs]
+    if not unknown:
+        return
+    hints = []
+    for n in unknown:
+        close = difflib.get_close_matches(n, configs, n=1)
+        hints.append(f"'{n}'" + (f" (did you mean '{close[0]}'?)" if close else ""))
+    raise ValueError(f"not in the catalogue: {', '.join(hints)}; `dkb status` lists it")
+
+
+def _age(when: datetime) -> str:
+    seconds = (datetime.now(UTC) - when).total_seconds()
+    if seconds < 3600:
+        return f"{int(seconds / 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds / 3600)}h ago"
+    return f"{int(seconds / 86400)}d ago"
 
 
 def _delete(path: Path):
