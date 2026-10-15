@@ -15,7 +15,7 @@ class GitRepository:
     provider: str
     owner: str
     repo: str
-    description: str = "No description available"
+    description: str | None = None
     default_branch: str = "main"
     latest_version: str | None = None
 
@@ -81,11 +81,6 @@ class RepositoryConfig:
             return self.version_source.latest_version
         return self.repository.latest_version
 
-    @property
-    def effective_description(self) -> str:
-        """Get the description to display."""
-        return self.repository.description
-
     def declaration(self) -> dict[str, Any]:
         """The catalogue entry: what to cache, nothing fetched."""
         data: dict[str, Any] = {"url": self.repository.url, "paths": self.paths}
@@ -97,7 +92,9 @@ class RepositoryConfig:
 
     def state(self) -> dict[str, Any]:
         """What was fetched: rewritten on every update, never tracked."""
-        data: dict[str, Any] = {"description": self.repository.description}
+        data: dict[str, Any] = {}
+        if self.repository.description:
+            data["description"] = self.repository.description
         if self.effective_version:
             data["version"] = self.effective_version
         if self.last_updated:
@@ -124,7 +121,7 @@ class RepositoryConfig:
 
         repository = _repository_from_stored(
             declared["url"],
-            description=state.get("description", "No description available"),
+            description=state.get("description"),
             default_branch=declared.get("branch") or "main",
             latest_version=state.get("version"),
         )
@@ -133,7 +130,7 @@ class RepositoryConfig:
         if "version_url" in declared and declared["version_url"] != declared["url"]:
             version_source = _repository_from_stored(
                 declared["version_url"],
-                description="Version source",
+                description=None,
                 default_branch="main",
                 latest_version=state.get("version"),
             )
@@ -157,7 +154,7 @@ class RepositoryConfig:
 
 def _repository_from_stored(
     url: str,
-    description: str,
+    description: str | None,
     default_branch: str,
     latest_version: str | None,
 ) -> GitRepository:

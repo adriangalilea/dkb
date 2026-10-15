@@ -63,7 +63,7 @@ class SkillManager:
                 [
                     "<item>",
                     f"  <name>{html.escape(name)}</name>",
-                    f"  <description>{html.escape(config.effective_description)}</description>",
+                    f"  <description>{html.escape(config.repository.description or '-')}</description>",
                     f"  <version>{html.escape(config.effective_version or '-')}</version>",
                     f"  <location>{html.escape(str(self.data_dir / name))}</location>",
                     f"  <structure>{html.escape(self._structure(name))}</structure>",
