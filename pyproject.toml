@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "adrian-utils>=0.9.0",
+    "adrian-utils>=0.9.1",
 ]
 
 [dependency-groups]
